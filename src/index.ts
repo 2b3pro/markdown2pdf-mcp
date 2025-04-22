@@ -28,7 +28,7 @@ class MarkdownPdfServer {
     this.server = new Server(
       {
         name: 'markdown2pdf',
-        version: '2.0.2',
+        version: '2.0.3',
       },
       {
         capabilities: {
@@ -53,7 +53,7 @@ class MarkdownPdfServer {
       tools: [
         {
           name: 'create_pdf_from_markdown',
-          description: 'Convert markdown content to PDF. Note: Cannot handle LaTeX math equations. Supports basic markdown elements like headers, lists, tables, code blocks, blockquotes, and images (both local and external URLs).',
+          description: 'Convert markdown content to PDF. Supports basic markdown elements like headers, lists, tables, code blocks, blockquotes, images, and mermaid diagrams. Note: Cannot handle LaTeX math equations.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -182,6 +182,36 @@ class MarkdownPdfServer {
     return newPath;
   }
 
+  private processMermaidDiagrams(markdownContent: string): {
+    processedMarkdown: string;
+    hasMermaidDiagrams: boolean;
+  } {
+    const mermaidRegex = /```mermaid\n([\s\S]*?)```/g;
+    let hasMermaidDiagrams = false;
+    
+    // Replace mermaid code blocks with unique placeholders
+    const processedMarkdown = markdownContent.replace(mermaidRegex, (match, code) => {
+      hasMermaidDiagrams = true;
+      // Generate a unique placeholder that won't be affected by markdown processing
+      return `MERMAID_DIAGRAM_PLACEHOLDER_${Buffer.from(code.trim()).toString('base64')}`;
+    });
+    
+    return { processedMarkdown, hasMermaidDiagrams };
+  }
+  
+  private restoreMermaidDiagrams(htmlContent: string): string {
+    // Find and replace all mermaid placeholders with actual mermaid divs
+    return htmlContent.replace(/MERMAID_DIAGRAM_PLACEHOLDER_([A-Za-z0-9+/=]+)/g, (match, encodedCode) => {
+      try {
+        const mermaidCode = Buffer.from(encodedCode, 'base64').toString('utf-8');
+        return `<div class="mermaid">${mermaidCode}</div>`;
+      } catch (error) {
+        console.error('Error decoding mermaid diagram:', error);
+        return '<div class="mermaid-error">Error processing diagram</div>';
+      }
+    });
+  }
+
   private async convertToPdf(
     markdown: string,
     outputPath: string,
@@ -212,7 +242,15 @@ class MarkdownPdfServer {
         remarkable: { breaks: true, preset: 'default' as const },
       };
 
-      // Convert markdown to HTML directly
+      // First, replace mermaid diagrams with placeholders to protect them from markdown processing
+      const { processedMarkdown, hasMermaidDiagrams } = this.processMermaidDiagrams(markdown);
+      
+      // Increase render delay if there are mermaid diagrams
+      if (hasMermaidDiagrams) {
+        opts.renderDelay = 10000; // 10 seconds for mermaid diagrams to render
+      }
+
+      // Convert markdown to HTML using Remarkable
       const mdParser = new Remarkable(opts.remarkable.preset, {
         highlight: function(str: string, language: string) {
           if (language && hljs.getLanguage(language)) {
@@ -227,6 +265,49 @@ class MarkdownPdfServer {
         },
         ...opts.remarkable,
       });
+      
+      // Convert markdown to HTML
+      let htmlContent = mdParser.render(processedMarkdown);
+      
+      // Restore mermaid diagrams to the HTML content
+      htmlContent = this.restoreMermaidDiagrams(htmlContent);
+
+      // Add mermaid script if diagrams are detected
+      const mermaidScript = hasMermaidDiagrams ? `
+      <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.0/dist/mermaid.min.js"></script>
+      <script>
+        // Initialize mermaid with specific configuration for PDF rendering
+        document.addEventListener('DOMContentLoaded', function() {
+          try {
+            // Initialize mermaid
+            mermaid.initialize({
+              startOnLoad: true,
+              theme: 'default',
+              securityLevel: 'loose',
+              flowchart: { 
+                useMaxWidth: false, 
+                htmlLabels: true 
+              }
+            });
+            
+            // Let puppeteer know when mermaid is done rendering
+            window.mermaidRendered = false;
+            mermaid.run().then(() => {
+              window.mermaidRendered = true;
+              document.dispatchEvent(new CustomEvent('mermaid-rendered'));
+              console.log('Mermaid diagrams rendered successfully');
+            }).catch(err => {
+              console.error('Mermaid rendering error:', err);
+              window.mermaidRendered = true; // Still mark as rendered to avoid hanging
+              document.dispatchEvent(new CustomEvent('mermaid-error'));
+            });
+          } catch (error) {
+            console.error('Mermaid initialization error:', error);
+            window.mermaidRendered = true; // Still mark as rendered to avoid hanging
+          }
+        });
+      </script>
+      ` : '';
 
       // Wrap the markdown HTML with the watermark and sizing script
       const html = `
@@ -274,12 +355,24 @@ class MarkdownPdfServer {
       z-index: 0;
       transform: rotate(-45deg);
     }
+    /* Mermaid styling */
+    .mermaid {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .mermaid-error {
+      color: red;
+      border: 1px solid red;
+      padding: 10px;
+      margin: 10px 0;
+    }
   </style>
+  ${mermaidScript}
 </head>
 <body>
   <div class="page">
     <div class="content">
-      ${mdParser.render(markdown)}
+      ${htmlContent}
     </div>
     ${watermark ? `<div class="watermark">${watermark}</div>` : ''}
   </div>
@@ -295,8 +388,9 @@ class MarkdownPdfServer {
           // Write HTML content to temporary file
           await fs.promises.writeFile(tmpHtmlPath, html);
 
-          // Import and use the Puppeteer renderer
+          // Import and use the Puppeteer renderer with a custom evaluation function
           const renderPDF = (await import('./puppeteer/render.js')).default;
+            
           await renderPDF({
             htmlPath: tmpHtmlPath,
             pdfPath: outputPath,
@@ -309,6 +403,7 @@ class MarkdownPdfServer {
             renderDelay: opts.renderDelay,
             loadTimeout: opts.loadTimeout
           });
+          
           resolve();
         } catch (error) {
           reject(error);

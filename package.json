@@ -1,6 +1,6 @@
 {
   "name": "markdown2pdf-mcp",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "license": "MIT",
   "description": "MCP server for converting markdown to PDF",
   "type": "module",

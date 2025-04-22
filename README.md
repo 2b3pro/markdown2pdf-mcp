@@ -13,6 +13,7 @@ Inspired by Alan Shaw's [markdown-pdf](https://github.com/alanshaw/markdown-pdf)
 - Modern PDF generation using Chrome's rendering engine
 - Excellent support for modern web features and fonts
 - Reliable resource loading and rendering
+- Mermaid diagrams support
 
 ## Limitations
 
