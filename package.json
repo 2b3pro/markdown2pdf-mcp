@@ -1,14 +1,38 @@
 {
   "name": "markdown2pdf-mcp",
-  "version": "2.0.3",
-  "license": "MIT",
+  "version": "2.1.0",
   "description": "MCP server for converting markdown to PDF",
+  "keywords": [
+    "model",
+    "context",
+    "protocol",
+    "markdown",
+    "pdf",
+    "mcp",
+    "server",
+    "productivity",
+    "tool"
+  ],
+  "homepage": "https://github.com/2b3pro/markdown2pdf-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/2b3pro/markdown2pdf-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/2b3pro/markdown2pdf-mcp.git"
+  },
+  "license": "MIT",
+  "author": "2B3 PRODUCTIONS LLC",
   "type": "module",
   "main": "build/index.js",
+  "directories": {
+    "test": "test"
+  },
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\" && npm run copy-assets",
     "copy-assets": "mkdir -p build/css build/puppeteer && cp src/css/pdf.css build/css/ && cp src/puppeteer/render.js build/puppeteer/ && cp src/runnings.js build/",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
@@ -17,14 +41,17 @@
     "remarkable": "^2.0.1",
     "tmp": "^0.2.1"
   },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^16.11.7",
+    "@types/tmp": "^0.2.3",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^4.5.2"
+  },
   "overrides": {
     "puppeteer": {
       "chrome-version": "131.0.6778.204"
     }
-  },
-  "devDependencies": {
-    "@types/node": "^16.11.7",
-    "@types/tmp": "^0.2.3",
-    "typescript": "^4.5.2"
   }
 }

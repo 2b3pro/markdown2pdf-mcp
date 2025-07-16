@@ -10,25 +10,28 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
-import { Remarkable } from 'remarkable';
-import hljs from 'highlight.js';
-import tmp from 'tmp';
-import { spawn } from 'child_process';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
+const hljs = require('highlight.js');
+const tmp = require('tmp');
+const { Remarkable } = require('remarkable');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 tmp.setGracefulCleanup();
 
-class MarkdownPdfServer {
+export class MarkdownPdfServer {
   private server: Server;
 
   constructor() {
     this.server = new Server(
       {
         name: 'markdown2pdf',
-        version: '2.0.3',
+        version: pkg.version,
       },
       {
         capabilities: {
@@ -41,11 +44,52 @@ class MarkdownPdfServer {
 
     this.setupToolHandlers();
     
-    this.server.onerror = (error: Error) => console.error('[MCP Error]', error);
-    process.on('SIGINT', async () => {
-      await this.server.close();
-      process.exit(0);
-    });
+    // Set up error handler first to ensure it's available for all operations
+    this.server.onerror = (error: Error): never => {
+      // Convert all errors to McpError for consistent handling
+      const mcpError = new McpError(
+        ErrorCode.InternalError,
+        `Server error: ${error.message}`,
+        {
+          details: {
+            name: error.name,
+            stack: error.stack
+          }
+        }
+      );
+      throw mcpError;
+    };
+
+    // Handle process termination gracefully
+    const handleShutdown = async (signal: string) => {
+      try {
+        await this.server.close();
+      } catch (error) {
+        // Convert unknown error to McpError
+        const mcpError = new McpError(
+          ErrorCode.InternalError,
+          `Server shutdown error during ${signal}: ${error instanceof Error ? error.message : String(error)}`,
+          {
+            details: {
+              signal,
+              ...(error instanceof Error ? {
+                name: error.name,
+                stack: error.stack
+              } : {})
+            }
+          }
+        );
+        // Throw error directly to avoid stdio interference
+        throw mcpError;
+      } finally {
+        // Ensure clean exit after error is handled
+        process.exit(0);
+      }
+    };
+
+    // Set up signal handlers
+    process.once('SIGINT', () => handleShutdown('SIGINT').catch(() => process.exit(1)));
+    process.once('SIGTERM', () => handleShutdown('SIGTERM').catch(() => process.exit(1)));
   }
 
   private setupToolHandlers() {
@@ -63,7 +107,7 @@ class MarkdownPdfServer {
               },
               outputFilename: {
                 type: 'string',
-                description: 'The filename of the PDF file to be saved (e.g. "output.pdf"). The environmental variable M2P_OUTPUT_DIR sets the output path directory. If not provided, it will default to user\'s HOME directory.',
+                description: 'Create a filename for the PDF file to be saved (default: "final-output.pdf"). The environmental variable M2P_OUTPUT_DIR sets the output path directory. If directory is not provided, it will default to user\'s HOME directory.',
               },
               paperFormat: {
                 type: 'string',
@@ -104,10 +148,33 @@ class MarkdownPdfServer {
         );
       }
 
-      // Get output directory from environment variable or use default
+      if (!request.params.arguments) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          'No arguments provided'
+        );
+      }
+
+      const args = request.params.arguments as {
+        markdown: string;
+        outputFilename?: string;
+        paperFormat?: string;
+        paperOrientation?: string;
+        paperBorder?: string;
+        watermark?: string;
+      };
+
+      // Get output directory from environment variable, outputFilename path, or default to user's home
       const outputDir = process.env.M2P_OUTPUT_DIR 
         ? path.resolve(process.env.M2P_OUTPUT_DIR)
-        : path.resolve(process.env.HOME || process.cwd());
+        : args.outputFilename && typeof args.outputFilename === 'string'
+          ? path.dirname(path.resolve(args.outputFilename))
+          : path.resolve(os.homedir());
+
+      // Ensure output directory exists
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
 
       const { 
         markdown, 
@@ -116,14 +183,7 @@ class MarkdownPdfServer {
         paperOrientation = 'portrait',
         paperBorder = '2cm',
         watermark = ''
-      } = request.params.arguments as {
-        markdown: string;
-        outputFilename?: string;
-        paperFormat?: string;
-        paperOrientation?: string;
-        paperBorder?: string;
-        watermark?: string;
-      };
+      } = args;
 
       // Ensure output filename has .pdf extension
       const filename = outputFilename.toLowerCase().endsWith('.pdf') 
@@ -134,6 +194,12 @@ class MarkdownPdfServer {
       const outputPath = path.join(outputDir, filename);
 
       try {
+        // Track operation progress through response content
+        const progressUpdates: string[] = [];
+        
+        progressUpdates.push(`Starting PDF conversion (format: ${paperFormat}, orientation: ${paperOrientation})`);
+        progressUpdates.push(`Using output path: ${outputPath}`);
+        
         await this.convertToPdf(
           markdown,
           outputPath,
@@ -142,27 +208,55 @@ class MarkdownPdfServer {
           paperBorder,
           watermark
         );
+
+        // Verify file was created
+        if (!fs.existsSync(outputPath)) {
+          throw new McpError(
+            ErrorCode.InternalError,
+            'PDF file was not created',
+            {
+              details: {
+                outputPath,
+                paperFormat,
+                paperOrientation
+              }
+            }
+          );
+        }
+
         // Ensure absolute path is returned
         const absolutePath = path.resolve(outputPath);
+        progressUpdates.push(`PDF file created successfully at: ${absolutePath}`);
+        progressUpdates.push(`File exists: ${fs.existsSync(absolutePath)}`);
+
         return {
           content: [
             {
               type: 'text',
-              text: `Successfully created PDF at: ${absolutePath}`,
+              text: progressUpdates.join('\n')
             },
           ],
         };
       } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return {
-          content: [
+        if (error instanceof Error) {
+          throw new McpError(
+            ErrorCode.InternalError,
+            `PDF generation failed: ${error.message}`,
             {
-              type: 'text',
-              text: `Failed to create PDF: ${errorMessage}`,
-            },
-          ],
-          isError: true,
-        };
+              details: {
+                name: error.name,
+                stack: error.stack,
+                outputPath,
+                paperFormat,
+                paperOrientation
+              }
+            }
+          );
+        }
+        throw new McpError(
+          ErrorCode.InternalError,
+          `PDF generation failed: ${String(error)}`
+        );
       }
     });
   }
@@ -220,101 +314,44 @@ class MarkdownPdfServer {
     paperBorder: string = '2cm',
     watermark: string = ''
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Get incremental path if file exists
-      outputPath = this.getIncrementalPath(outputPath);
+    return new Promise<void>(async (resolve, reject) => {
+      try {
+        // Ensure output directory exists
+        const outputDir = path.dirname(outputPath);
+        await fs.promises.mkdir(outputDir, { recursive: true });
 
-      // Ensure all paths are absolute
-      outputPath = path.resolve(outputPath);
-      
-      // Ensure output directory exists
-      const outputDir = path.dirname(outputPath);
-      fs.mkdirSync(outputDir, { recursive: true });
-      
-      const opts = {
-        runningsPath: path.resolve(__dirname, 'runnings.js'),
-        cssPath: path.resolve(__dirname, 'css', 'pdf.css'),
-        paperFormat,
-        paperOrientation,
-        paperBorder,
-        renderDelay: 5000, // Increased render delay for complex documents
-        loadTimeout: 60000, // Increased timeout for larger documents with external resources
-        remarkable: { breaks: true, preset: 'default' as const },
-      };
+        // Get incremental path and ensure absolute
+        outputPath = this.getIncrementalPath(outputPath);
+        outputPath = path.resolve(outputPath);
 
-      // First, replace mermaid diagrams with placeholders to protect them from markdown processing
-      const { processedMarkdown, hasMermaidDiagrams } = this.processMermaidDiagrams(markdown);
-      
-      // Increase render delay if there are mermaid diagrams
-      if (hasMermaidDiagrams) {
-        opts.renderDelay = 10000; // 10 seconds for mermaid diagrams to render
-      }
-
-      // Convert markdown to HTML using Remarkable
-      const mdParser = new Remarkable(opts.remarkable.preset, {
-        highlight: function(str: string, language: string) {
-          if (language && hljs.getLanguage(language)) {
+        // Setup markdown parser with syntax highlighting
+        const mdParser = new Remarkable({
+          breaks: true,
+          preset: 'default',
+          html: true, // Enable HTML tags
+          highlight: (str: string, language: string) => {
+            if (language && language === 'mermaid') {
+              return `<div class="mermaid">${str}</div>`;
+            }
+            if (language && hljs.getLanguage(language)) {
+              try {
+                return hljs.highlight(str, { language }).value;
+              } catch (err) {}
+            }
             try {
-              return hljs.highlight(str, { language }).value;
+              return hljs.highlightAuto(str).value;
             } catch (err) {}
-          }
-          try {
-            return hljs.highlightAuto(str).value;
-          } catch (err) {}
-          return '';
-        },
-        ...opts.remarkable,
-      });
-      
-      // Convert markdown to HTML
-      let htmlContent = mdParser.render(processedMarkdown);
-      
-      // Restore mermaid diagrams to the HTML content
-      htmlContent = this.restoreMermaidDiagrams(htmlContent);
-
-      // Add mermaid script if diagrams are detected
-      const mermaidScript = hasMermaidDiagrams ? `
-      <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.0/dist/mermaid.min.js"></script>
-      <script>
-        // Initialize mermaid with specific configuration for PDF rendering
-        document.addEventListener('DOMContentLoaded', function() {
-          try {
-            // Initialize mermaid
-            mermaid.initialize({
-              startOnLoad: true,
-              theme: 'default',
-              securityLevel: 'loose',
-              flowchart: { 
-                useMaxWidth: false, 
-                htmlLabels: true 
-              }
-            });
-            
-            // Let puppeteer know when mermaid is done rendering
-            window.mermaidRendered = false;
-            mermaid.run().then(() => {
-              window.mermaidRendered = true;
-              document.dispatchEvent(new CustomEvent('mermaid-rendered'));
-              console.log('Mermaid diagrams rendered successfully');
-            }).catch(err => {
-              console.error('Mermaid rendering error:', err);
-              window.mermaidRendered = true; // Still mark as rendered to avoid hanging
-              document.dispatchEvent(new CustomEvent('mermaid-error'));
-            });
-          } catch (error) {
-            console.error('Mermaid initialization error:', error);
-            window.mermaidRendered = true; // Still mark as rendered to avoid hanging
+            return '';
           }
         });
-      </script>
-      ` : '';
 
-      // Wrap the markdown HTML with the watermark and sizing script
-      const html = `
+        // Create HTML content
+        const html = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
     @page {
       margin: 20px;
@@ -371,53 +408,146 @@ class MarkdownPdfServer {
 </head>
 <body>
   <div class="page">
+    <div id="mermaid-error" style="display: none; color: red;"></div>
     <div class="content">
       ${htmlContent}
     </div>
     ${watermark ? `<div class="watermark">${watermark}</div>` : ''}
   </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      mermaid.initialize({ startOnLoad: false });
+      try {
+        mermaid.run({
+          nodes: document.querySelectorAll('.mermaid')
+        });
+      } catch (e) {
+        const errorDiv = document.getElementById('mermaid-error');
+        if (errorDiv) {
+          errorDiv.style.display = 'block';
+          errorDiv.innerText = e.message;
+        }
+      }
+    });
+  </script>
 </body>
 </html>`;
 
-      // Create temporary HTML file
-      tmp.file({ postfix: '.html' }, async (err, tmpHtmlPath, tmpHtmlFd) => {
-        if (err) return reject(err);
-        fs.closeSync(tmpHtmlFd);
-
-        try {
-          // Write HTML content to temporary file
-          await fs.promises.writeFile(tmpHtmlPath, html);
-
-          // Import and use the Puppeteer renderer with a custom evaluation function
-          const renderPDF = (await import('./puppeteer/render.js')).default;
-            
-          await renderPDF({
-            htmlPath: tmpHtmlPath,
-            pdfPath: outputPath,
-            runningsPath: opts.runningsPath,
-            cssPath: opts.cssPath,
-            highlightCssPath: '',
-            paperFormat: opts.paperFormat,
-            paperOrientation: opts.paperOrientation,
-            paperBorder: opts.paperBorder,
-            renderDelay: opts.renderDelay,
-            loadTimeout: opts.loadTimeout
+        // Create temporary HTML file
+        const tmpFile = await new Promise<{path: string, fd: number}>((resolve, reject) => {
+          tmp.file({ postfix: '.html' }, (err: Error | null, path: string, fd: number) => {
+            if (err) reject(err);
+            else resolve({path, fd});
           });
-          
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      });
+        });
+
+        // Close file descriptor immediately
+        fs.closeSync(tmpFile.fd);
+
+        // Write HTML content
+        await fs.promises.writeFile(tmpFile.path, html);
+
+        // Import and use Puppeteer renderer
+        const renderPDF = (await import('./puppeteer/render.js')).default;
+        await renderPDF({
+          htmlPath: tmpFile.path,
+          pdfPath: outputPath,
+          runningsPath: path.resolve(__dirname, 'runnings.js'),
+          cssPath: path.resolve(__dirname, 'css', 'pdf.css'),
+          highlightCssPath: '',
+          paperFormat,
+          paperOrientation,
+          paperBorder,
+          renderDelay: 7000,
+          loadTimeout: 60000
+        });
+
+        resolve();
+      } catch (error) {
+        reject(new McpError(
+          ErrorCode.InternalError,
+          `PDF generation failed: ${error instanceof Error ? error.message : String(error)}`,
+          {
+            details: {
+              phase: error instanceof Error && error.message.includes('renderPDF') ? 'renderPDF' : 'setup',
+              outputPath,
+              paperFormat,
+              paperOrientation,
+              ...(error instanceof Error ? {
+                name: error.name,
+                stack: error.stack
+              } : {})
+            }
+          }
+        ));
+      }
     });
   }
 
-  async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('Markdown to PDF MCP server running on stdio');
+  private transport: StdioServerTransport | null = null;
+  private isRunning: boolean = false;
+
+  public async run(): Promise<void> {
+    if (this.isRunning) {
+      return;
+    }
+
+    this.isRunning = true;
+    this.transport = new StdioServerTransport();
+    
+    try {
+      await this.server.connect(this.transport);
+      
+      // Keep the process running until explicitly closed
+      return new Promise<void>((resolve) => {
+        const cleanup = async () => {
+          this.isRunning = false;
+          if (this.transport) {
+            try {
+              await this.server.close();
+            } catch (error) {
+              console.error('Error during server shutdown:', error);
+            }
+            this.transport = null;
+          }
+          resolve();
+        };
+
+        process.once('SIGINT', cleanup);
+        process.once('SIGTERM', cleanup);
+      });
+    } catch (error) {
+      this.isRunning = false;
+      if (this.transport) {
+        try {
+          await this.server.close();
+        } catch (closeError) {
+          console.error('Error during error cleanup:', closeError);
+        }
+        this.transport = null;
+      }
+      throw error;
+    }
   }
 }
 
 const server = new MarkdownPdfServer();
-server.run().catch(console.error);
+
+server.run().catch(error => {
+  if (error instanceof Error) {
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Server initialization failed: ${error.message}`,
+      {
+        details: {
+          name: error.name,
+          stack: error.stack
+        }
+      }
+    );
+  }
+  throw new McpError(
+    ErrorCode.InternalError,
+    `Server initialization failed: ${String(error)}`
+  );
+});

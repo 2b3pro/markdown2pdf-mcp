@@ -10,6 +10,7 @@ Inspired by Alan Shaw's [markdown-pdf](https://github.com/alanshaw/markdown-pdf)
 - Syntax highlighting for code blocks
 - Custom CSS styling for PDF output
 - Support for standard Markdown formatting
+- Mermaid diagram rendering
 - Modern PDF generation using Chrome's rendering engine
 - Excellent support for modern web features and fonts
 - Reliable resource loading and rendering
@@ -33,6 +34,25 @@ Stick to these supported markdown elements:
 - Links
 - Images (both local files and external URLs)
 - Task lists
+- Mermaid diagrams
+
+### Mermaid Diagrams
+
+To render a Mermaid diagram, use a `mermaid` code block:
+
+´´´markdown
+
+```mermaid
+graph TD;
+    A-->B;
+    A-->C;
+    B-->D;
+    C-->D;
+```
+
+´´´
+
+If there is a syntax error in your diagram, the error message will be rendered in the PDF, helping you to debug it.
 
 ## Installation
 
