@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer';
-import { fileURLToPath } from 'url';
+import { pathToFileURL } from 'url';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -33,6 +33,7 @@ async function renderPDF({
   paperFormat,
   paperOrientation,
   paperBorder,
+  showPageNumbers,
   renderDelay,
   loadTimeout
 }) {
@@ -76,7 +77,8 @@ async function renderPDF({
     });
 
     // Load the HTML file with timeout
-    await page.goto(`file://${htmlPath}`, {
+    const htmlFileUrl = pathToFileURL(htmlPath).href;
+    await page.goto(htmlFileUrl, {
       waitUntil: 'networkidle0',
       timeout: loadTimeout
     }).catch(err => {
@@ -84,7 +86,8 @@ async function renderPDF({
     });
 
     // Import runnings (header/footer)
-    const runnings = await import(runningsPath).catch(err => {
+    const runningsUrl = pathToFileURL(runningsPath).href;
+    const runningsModule = await import(runningsUrl).catch(err => {
       throw new Error(`Failed to import runnings.js: ${err.message}`);
     });
 
@@ -126,7 +129,18 @@ async function renderPDF({
       return watermark ? watermark.textContent : '';
     });
 
-    // Generate PDF
+    const templatesFactory = runningsModule?.default;
+    if (typeof templatesFactory !== 'function') {
+      throw new Error('Invalid runnings export: expected default function');
+    }
+
+    const templates = templatesFactory({
+      watermarkText,
+      showPageNumbers
+    });
+
+    const shouldDisplayHeaderFooter = Boolean(showPageNumbers || watermarkText);
+
     await page.pdf({
       path: pdfPath,
       format: paperFormat,
@@ -138,9 +152,9 @@ async function renderPDF({
         left: paperBorder
       },
       printBackground: true,
-      displayHeaderFooter: !!watermarkText,
-      headerTemplate: watermarkText ? runnings.default.header(watermarkText) : '',
-      footerTemplate: watermarkText ? runnings.default.footer(watermarkText) : '',
+      displayHeaderFooter: shouldDisplayHeaderFooter,
+      headerTemplate: shouldDisplayHeaderFooter ? templates.header : '',
+      footerTemplate: shouldDisplayHeaderFooter ? templates.footer : '',
       preferCSSPageSize: true
     });
 

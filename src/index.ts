@@ -132,6 +132,11 @@ export class MarkdownPdfServer {
                 description: 'Optional watermark text (max 15 characters, uppercase), e.g. "DRAFT", "PRELIMINARY", "CONFIDENTIAL", "FOR REVIEW", etc',
                 maxLength: 15,
                 pattern: '^[A-Z0-9\\s-]+$'
+              },
+              showPageNumbers: {
+                type: 'boolean',
+                description: 'Include page numbers in the PDF footer (default: false)',
+                default: false
               }
             },
             required: ['markdown']
@@ -162,14 +167,27 @@ export class MarkdownPdfServer {
         paperOrientation?: string;
         paperBorder?: string;
         watermark?: string;
+        showPageNumbers?: boolean;
       };
 
       // Get output directory from environment variable, outputFilename path, or default to user's home
-      const outputDir = process.env.M2P_OUTPUT_DIR 
-        ? path.resolve(process.env.M2P_OUTPUT_DIR)
-        : args.outputFilename && typeof args.outputFilename === 'string'
-          ? path.dirname(path.resolve(args.outputFilename))
-          : path.resolve(os.homedir());
+      const outputDir = (() => {
+        if (process.env.M2P_OUTPUT_DIR) {
+          return path.resolve(process.env.M2P_OUTPUT_DIR);
+        }
+
+        if (args.outputFilename && typeof args.outputFilename === 'string') {
+          const hasExplicitDirectory =
+            path.isAbsolute(args.outputFilename) ||
+            path.dirname(args.outputFilename) !== '.';
+
+          if (hasExplicitDirectory) {
+            return path.dirname(path.resolve(args.outputFilename));
+          }
+        }
+
+        return path.resolve(os.homedir());
+      })();
 
       // Ensure output directory exists
       if (!fs.existsSync(outputDir)) {
@@ -182,8 +200,16 @@ export class MarkdownPdfServer {
         paperFormat = 'letter',
         paperOrientation = 'portrait',
         paperBorder = '2cm',
-        watermark = ''
+        watermark = '',
+        showPageNumbers = false
       } = args;
+
+      if (typeof markdown !== 'string' || markdown.trim().length === 0) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          'Missing required argument: markdown'
+        );
+      }
 
       // Ensure output filename has .pdf extension
       const filename = outputFilename.toLowerCase().endsWith('.pdf') 
@@ -206,7 +232,8 @@ export class MarkdownPdfServer {
           paperFormat,
           paperOrientation,
           paperBorder,
-          watermark
+          watermark,
+          showPageNumbers
         );
 
         // Verify file was created
@@ -282,7 +309,8 @@ export class MarkdownPdfServer {
     paperFormat: string = 'letter',
     paperOrientation: string = 'portrait',
     paperBorder: string = '2cm',
-    watermark: string = ''
+    watermark: string = '',
+    showPageNumbers: boolean = false
   ): Promise<void> {
     return new Promise<void>(async (resolve, reject) => {
       try {
@@ -416,6 +444,7 @@ export class MarkdownPdfServer {
           paperFormat,
           paperOrientation,
           paperBorder,
+          showPageNumbers,
           renderDelay: 7000,
           loadTimeout: 60000
         });
@@ -489,22 +518,24 @@ export class MarkdownPdfServer {
   }
 }
 
-const server = new MarkdownPdfServer();
-server.run().catch(error => {
-  if (error instanceof Error) {
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  const server = new MarkdownPdfServer();
+  server.run().catch(error => {
+    if (error instanceof Error) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Server initialization failed: ${error.message}`,
+        {
+          details: {
+            name: error.name,
+            stack: error.stack
+          }
+        }
+      );
+    }
     throw new McpError(
       ErrorCode.InternalError,
-      `Server initialization failed: ${error.message}`,
-      {
-        details: {
-          name: error.name,
-          stack: error.stack
-        }
-      }
+      `Server initialization failed: ${String(error)}`
     );
-  }
-  throw new McpError(
-    ErrorCode.InternalError,
-    `Server initialization failed: ${String(error)}`
-  );
-});
+  });
+}

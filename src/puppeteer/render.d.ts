@@ -7,6 +7,7 @@ interface RenderPDFOptions {
   paperFormat: string;
   paperOrientation: string;
   paperBorder: string;
+  showPageNumbers: boolean;
   renderDelay: number;
   loadTimeout: number;
 }

@@ -6,6 +6,12 @@ export default {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
+  testMatch: ['**/?(*.)+(spec|test).ts'],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '<rootDir>/test.js',
+    '<rootDir>/test/test-mcp.js',
+  ],
   transform: {
     '^.+\\.tsx?$': [
       'ts-jest',
