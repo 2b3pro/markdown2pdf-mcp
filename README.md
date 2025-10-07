@@ -143,13 +143,13 @@ await use_mcp_tool({
 
 ## Running on Demand with `npx`
 
-You can run the server without a local install by invoking it directly with `npx`:
+You can run the server without a permanent local install by asking `npx` to grab the latest package and execute its entrypoint:
 
 ```bash
-npx markdown2pdf-mcp@latest
+npx -y markdown2pdf-mcp@latest
 ```
 
-This launches the MCP server using the latest published version. Combine this with your MCP-aware client (e.g., Cline or Claude Desktop) by pointing the client configuration to the `npx` command.
+This command installs the package into a temporary workspace and then starts the MCP server via its bundled CLI. Point your MCP-aware client (e.g., Cline or Claude Desktop) to this command to spin up the server on demand.
 
 ## Configuration
 
@@ -161,8 +161,8 @@ You can configure the output directory in your MCP settings file for apps that u
 {
   "mcpServers": {
     "markdown2pdf": {
-      "command": "node",
-      "args": ["path/to/markdown2pdf-mcp/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "markdown2pdf-mcp@latest"],
       "env": {
         "M2P_OUTPUT_DIR": "/path/to/output/directory"
       }
@@ -172,6 +172,8 @@ You can configure the output directory in your MCP settings file for apps that u
 ```
 
 The tool automatically handles file name conflicts by appending incremental numbers (e.g., output.pdf, output-1.pdf, output-2.pdf).
+
+> Prefer a locally built version? Swap `"command"` back to `node` and point `"args"` to the compiled `build/index.js` path instead of using `npx`, for example: `"args": ["/path/to/markdown2pdf-mcp/build/index.js"]`.
 
 ## Dependencies
 
