@@ -1,6 +1,6 @@
 {
   "name": "markdown2pdf-mcp",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "MCP server for converting markdown to PDF",
   "keywords": [
     "model",

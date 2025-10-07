@@ -53,10 +53,12 @@ const templateStyles = `
 
 export default function buildHeaderFooter({
   watermarkText = '',
+  watermarkScope = 'all-pages',
   showPageNumbers = false
 } = {}) {
   const safeWatermark = escapeHtml(watermarkText);
-  const watermarkSpan = safeWatermark
+  const includeWatermark = safeWatermark && watermarkScope === 'all-pages';
+  const watermarkSpan = includeWatermark
     ? `<span class="m2p-watermark">${safeWatermark}</span>`
     : '<span></span>';
   const pageNumberSpan = showPageNumbers

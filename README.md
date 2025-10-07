@@ -4,7 +4,7 @@
 
 # Markdown2PDF MCP Server (markdown2pdf-mcp)
 
-An MCP server for converting Markdown documents to PDF files. This server provides a simple and efficient way to generate PDFs from Markdown content with support for syntax highlighting and custom styling. Also allows for watermarking on page 1.
+An MCP server for converting Markdown documents to PDF files. This server provides a simple and efficient way to generate PDFs from Markdown content with support for syntax highlighting, custom styling, optional page numbers, and flexible watermark placement (first page only or all pages).
 
 Inspired by Alan Shaw's [markdown-pdf](https://github.com/alanshaw/markdown-pdf).
 
@@ -18,6 +18,8 @@ Inspired by Alan Shaw's [markdown-pdf](https://github.com/alanshaw/markdown-pdf)
 - Modern PDF generation using Chrome's rendering engine
 - Excellent support for modern web features and fonts
 - Reliable resource loading and rendering
+- Optional page numbers rendered via the PDF footer
+- Watermarks with configurable scope (first page or all pages)
 
 ## Limitations
 
@@ -102,6 +104,8 @@ The server provides a single tool `create_pdf_from_markdown` with the following 
   paperOrientation?: string; // 'portrait' (default), 'landscape'
   paperBorder?: string;     // '2cm' (default), accepts decimal values with CSS units (e.g., '1.5cm', '2.5mm', '0.5in', '10.5px')
   watermark?: string;       // Optional watermark text (max 15 characters, uppercase)
+  watermarkScope?: 'all-pages' | 'first-page'; // Defaults to 'all-pages'
+  showPageNumbers?: boolean; // Defaults to false
 }
 ```
 
@@ -118,6 +122,8 @@ await use_mcp_tool({
     paperOrientation: "landscape",
     paperBorder: "1.5cm",
     watermark: "DRAFT",
+    watermarkScope: "first-page",
+    showPageNumbers: true,
   },
 });
 ```
@@ -134,6 +140,16 @@ await use_mcp_tool({
   },
 });
 ```
+
+## Running on Demand with `npx`
+
+You can run the server without a local install by invoking it directly with `npx`:
+
+```bash
+npx markdown2pdf-mcp@latest
+```
+
+This launches the MCP server using the latest published version. Combine this with your MCP-aware client (e.g., Cline or Claude Desktop) by pointing the client configuration to the `npx` command.
 
 ## Configuration
 

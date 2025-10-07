@@ -33,6 +33,7 @@ async function renderPDF({
   paperFormat,
   paperOrientation,
   paperBorder,
+  watermarkScope,
   showPageNumbers,
   renderDelay,
   loadTimeout
@@ -136,10 +137,13 @@ async function renderPDF({
 
     const templates = templatesFactory({
       watermarkText,
+      watermarkScope,
       showPageNumbers
     });
 
-    const shouldDisplayHeaderFooter = Boolean(showPageNumbers || watermarkText);
+    const shouldDisplayHeaderFooter = Boolean(
+      showPageNumbers || (watermarkText && watermarkScope === 'all-pages')
+    );
 
     await page.pdf({
       path: pdfPath,

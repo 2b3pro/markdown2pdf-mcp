@@ -43,7 +43,7 @@ export class MarkdownPdfServer {
     );
 
     this.setupToolHandlers();
-    
+
     // Set up error handler first to ensure it's available for all operations
     this.server.onerror = (error: Error): never => {
       // Convert all errors to McpError for consistent handling
@@ -107,7 +107,7 @@ export class MarkdownPdfServer {
               },
               outputFilename: {
                 type: 'string',
-                description: 'Create a filename for the PDF file to be saved (default: "final-output.pdf"). The environmental variable M2P_OUTPUT_DIR sets the output path directory. If directory is not provided, it will default to user\'s HOME directory.',
+                description: 'Create a filename for the PDF file to be saved (default: "final-output.pdf"). The environmental variable M2P_OUTPUT_DIR sets the output path directory. If directory is not provided, it will default to user\'s HOME directory.'
               },
               paperFormat: {
                 type: 'string',
@@ -132,6 +132,12 @@ export class MarkdownPdfServer {
                 description: 'Optional watermark text (max 15 characters, uppercase), e.g. "DRAFT", "PRELIMINARY", "CONFIDENTIAL", "FOR REVIEW", etc',
                 maxLength: 15,
                 pattern: '^[A-Z0-9\\s-]+$'
+              },
+              watermarkScope: {
+                type: 'string',
+                description: 'Control watermark visibility: "all-pages" repeats on every page, "first-page" displays on the first page only (default: all-pages)',
+                enum: ['all-pages', 'first-page'],
+                default: 'all-pages'
               },
               showPageNumbers: {
                 type: 'boolean',
@@ -167,6 +173,7 @@ export class MarkdownPdfServer {
         paperOrientation?: string;
         paperBorder?: string;
         watermark?: string;
+        watermarkScope?: 'all-pages' | 'first-page';
         showPageNumbers?: boolean;
       };
 
@@ -194,13 +201,14 @@ export class MarkdownPdfServer {
         fs.mkdirSync(outputDir, { recursive: true });
       }
 
-      const { 
-        markdown, 
+      const {
+        markdown,
         outputFilename = 'output.pdf',
         paperFormat = 'letter',
         paperOrientation = 'portrait',
         paperBorder = '2cm',
         watermark = '',
+        watermarkScope = 'all-pages',
         showPageNumbers = false
       } = args;
 
@@ -212,8 +220,8 @@ export class MarkdownPdfServer {
       }
 
       // Ensure output filename has .pdf extension
-      const filename = outputFilename.toLowerCase().endsWith('.pdf') 
-        ? outputFilename 
+      const filename = outputFilename.toLowerCase().endsWith('.pdf')
+        ? outputFilename
         : `${outputFilename}.pdf`;
 
       // Combine output directory with filename
@@ -222,10 +230,10 @@ export class MarkdownPdfServer {
       try {
         // Track operation progress through response content
         const progressUpdates: string[] = [];
-        
+
         progressUpdates.push(`Starting PDF conversion (format: ${paperFormat}, orientation: ${paperOrientation})`);
         progressUpdates.push(`Using output path: ${outputPath}`);
-        
+
         await this.convertToPdf(
           markdown,
           outputPath,
@@ -233,6 +241,7 @@ export class MarkdownPdfServer {
           paperOrientation,
           paperBorder,
           watermark,
+          watermarkScope,
           showPageNumbers
         );
 
@@ -310,6 +319,7 @@ export class MarkdownPdfServer {
     paperOrientation: string = 'portrait',
     paperBorder: string = '2cm',
     watermark: string = '',
+    watermarkScope: 'all-pages' | 'first-page' = 'all-pages',
     showPageNumbers: boolean = false
   ): Promise<void> {
     return new Promise<void>(async (resolve, reject) => {
@@ -334,14 +344,24 @@ export class MarkdownPdfServer {
             if (language && hljs.getLanguage(language)) {
               try {
                 return hljs.highlight(str, { language }).value;
-              } catch (err) {}
+              } catch (err) { }
             }
             try {
               return hljs.highlightAuto(str).value;
-            } catch (err) {}
+            } catch (err) { }
             return '';
           }
         });
+
+        const watermarkClassName =
+          watermarkScope === 'first-page'
+            ? 'watermark watermark--first-page'
+            : 'watermark watermark--all-pages';
+
+        const headerOffset = '12.5mm';
+        const showWatermarkAllPages = Boolean(
+          watermark && watermarkScope === 'all-pages'
+        );
 
         // Create HTML content
         const html = `
@@ -352,8 +372,14 @@ export class MarkdownPdfServer {
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
     @page {
-      margin: 20px;
+      margin: ${paperBorder};
+      ${showWatermarkAllPages ? `margin-top: calc(${paperBorder} + ${headerOffset});` : ''}
       size: ${paperFormat} ${paperOrientation};
+    }
+    ${
+      showWatermarkAllPages
+        ? `@page:first { margin-top: ${paperBorder}; }`
+        : ''
     }
     html, body {
       margin: 0;
@@ -374,7 +400,6 @@ export class MarkdownPdfServer {
       z-index: 1;
     }
     .watermark {
-      position: absolute;
       left: 0;
       top: 0;
       right: 0;
@@ -390,6 +415,8 @@ export class MarkdownPdfServer {
       z-index: 0;
       transform: rotate(-45deg);
     }
+    .watermark--all-pages { position: fixed; }
+    .watermark--first-page { position: absolute; }
   </style>
 </head>
 <body>
@@ -398,7 +425,7 @@ export class MarkdownPdfServer {
     <div class="content">
       ${mdParser.render(markdown)}
     </div>
-    ${watermark ? `<div class="watermark">${watermark}</div>` : ''}
+    ${watermark ? `<div class="${watermarkClassName}" data-scope="${watermarkScope}">${watermark}</div>` : ''}
   </div>
   <script>
     document.addEventListener('DOMContentLoaded', function () {
@@ -420,10 +447,10 @@ export class MarkdownPdfServer {
 </html>`;
 
         // Create temporary HTML file
-        const tmpFile = await new Promise<{path: string, fd: number}>((resolve, reject) => {
+        const tmpFile = await new Promise<{ path: string, fd: number }>((resolve, reject) => {
           tmp.file({ postfix: '.html' }, (err: Error | null, path: string, fd: number) => {
             if (err) reject(err);
-            else resolve({path, fd});
+            else resolve({ path, fd });
           });
         });
 
@@ -444,6 +471,7 @@ export class MarkdownPdfServer {
           paperFormat,
           paperOrientation,
           paperBorder,
+          watermarkScope,
           showPageNumbers,
           renderDelay: 7000,
           loadTimeout: 60000
@@ -481,10 +509,10 @@ export class MarkdownPdfServer {
 
     this.isRunning = true;
     this.transport = new StdioServerTransport();
-    
+
     try {
       await this.server.connect(this.transport);
-      
+
       // Keep the process running until explicitly closed
       return new Promise<void>((resolve) => {
         const cleanup = async () => {
