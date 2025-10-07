@@ -161,8 +161,7 @@ You can configure the output directory in your MCP settings file for apps that u
 {
   "mcpServers": {
     "markdown2pdf": {
-      "command": "npx",
-      "args": ["-y", "markdown2pdf-mcp@latest"],
+      "args": ["/path/to/markdown2pdf-mcp/build/index.js"],
       "env": {
         "M2P_OUTPUT_DIR": "/path/to/output/directory"
       }
