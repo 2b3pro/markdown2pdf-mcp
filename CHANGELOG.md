@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [2.1.6] - 2025-10-07
+
+### Added
+
+- Dynamic timeout scaling based on content size (scales up to 5 minutes for large files)
+- Content size validation with 10MB hard limit and helpful error messages
+- Optional verbose logging via `M2P_VERBOSE=true` environment variable
+- Browser crash detection with descriptive error messages
+- Progress tracking showing content size and line count
+
+### Changed
+
+- Increased Puppeteer memory limit to 4GB for handling large documents
+- Enhanced error messages to explain timeout and memory issues
+- Timeouts now scale automatically: base 60s + 1s per 10KB (load), base 7s + 1s per 100 lines (render)
+- All logging now uses stderr to prevent interference with MCP stdio transport
+
+### Fixed
+
+- Silent failures when processing large markdown files (1300+ lines)
+- Browser crashes due to insufficient memory allocation
+- Timeout errors with large or complex documents
+- Missing error messages when PDF generation fails
+
 ## [2.1.4] - 2025-10-07
 
 - Prepped for npm

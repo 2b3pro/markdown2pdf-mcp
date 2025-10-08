@@ -219,6 +219,44 @@ export class MarkdownPdfServer {
         );
       }
 
+      // Calculate content size and validate
+      const contentSize = markdown.length;
+      const lineCount = markdown.split('\n').length;
+
+      // Hard limit check - prevent extremely large files that will definitely fail
+      const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+      if (contentSize > MAX_SIZE) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Markdown content too large (${Math.round(contentSize / 1024 / 1024)}MB). Maximum supported size is ${MAX_SIZE / 1024 / 1024}MB. Consider splitting the content into smaller documents.`,
+          {
+            details: {
+              contentSize,
+              maxSize: MAX_SIZE,
+              lineCount
+            }
+          }
+        );
+      }
+
+      // Calculate dynamic timeouts based on content size
+      // Base: 60s load, 7s render. Add 1s per 10KB and 1s per 100 lines
+      const baseLoadTimeout = 60000;
+      const baseRenderDelay = 7000;
+      const loadTimeout = Math.min(
+        baseLoadTimeout + Math.floor(contentSize / 10000) * 1000,
+        300000 // Max 5 minutes
+      );
+      const renderDelay = Math.min(
+        baseRenderDelay + Math.floor(lineCount / 100) * 1000,
+        30000 // Max 30 seconds
+      );
+
+      if (contentSize > 500000) { // ~500KB
+        console.error(`[markdown2pdf] Warning: Large markdown content detected (${Math.round(contentSize / 1024)}KB, ${lineCount} lines). Processing may take longer than usual.`);
+        console.error(`[markdown2pdf] Using extended timeouts: load=${loadTimeout/1000}s, render=${renderDelay/1000}s`);
+      }
+
       // Ensure output filename has .pdf extension
       const filename = outputFilename.toLowerCase().endsWith('.pdf')
         ? outputFilename
@@ -232,6 +270,7 @@ export class MarkdownPdfServer {
         const progressUpdates: string[] = [];
 
         progressUpdates.push(`Starting PDF conversion (format: ${paperFormat}, orientation: ${paperOrientation})`);
+        progressUpdates.push(`Content size: ${Math.round(contentSize / 1024)}KB (${lineCount} lines)`);
         progressUpdates.push(`Using output path: ${outputPath}`);
 
         await this.convertToPdf(
@@ -242,7 +281,9 @@ export class MarkdownPdfServer {
           paperBorder,
           watermark,
           watermarkScope,
-          showPageNumbers
+          showPageNumbers,
+          renderDelay,
+          loadTimeout
         );
 
         // Verify file was created
@@ -320,7 +361,9 @@ export class MarkdownPdfServer {
     paperBorder: string = '2cm',
     watermark: string = '',
     watermarkScope: 'all-pages' | 'first-page' = 'all-pages',
-    showPageNumbers: boolean = false
+    showPageNumbers: boolean = false,
+    renderDelay: number = 7000,
+    loadTimeout: number = 60000
   ): Promise<void> {
     return new Promise<void>(async (resolve, reject) => {
       try {
@@ -473,8 +516,8 @@ export class MarkdownPdfServer {
           paperBorder,
           watermarkScope,
           showPageNumbers,
-          renderDelay: 7000,
-          loadTimeout: 60000
+          renderDelay,
+          loadTimeout
         });
 
         resolve();

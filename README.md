@@ -172,6 +172,42 @@ You can configure the output directory in your MCP settings file for apps that u
 
 The tool automatically handles file name conflicts by appending incremental numbers (e.g., output.pdf, output-1.pdf, output-2.pdf).
 
+### Large File Support
+
+The tool automatically handles large markdown files with:
+
+- **Dynamic Timeouts**: Automatically scales based on content size (up to 5 minutes for very large files)
+- **Memory Limits**: 4GB memory allocation for Chrome to handle complex documents
+- **Size Validation**: Maximum 10MB file size with clear error messages
+- **Progress Tracking**: Shows content size and estimated processing time
+
+For very large files (1300+ lines), the tool will:
+1. Warn you about extended processing time
+2. Automatically increase timeouts
+3. Display content size in the response
+4. Provide detailed error messages if processing fails
+
+### Verbose Logging
+
+Enable detailed logging for debugging:
+
+```json
+{
+  "mcpServers": {
+    "markdown2pdf": {
+      "command": "node",
+      "args": ["/path/to/markdown2pdf-mcp/build/index.js"],
+      "env": {
+        "M2P_OUTPUT_DIR": "/path/to/output/directory",
+        "M2P_VERBOSE": "true"
+      }
+    }
+  }
+}
+```
+
+This will log processing steps to stderr without interfering with MCP communication.
+
 > Prefer a locally built version? Swap `"command"` back to `node` and point `"args"` to the compiled `build/index.js` path instead of using `npx`, for example: `"args": ["/path/to/markdown2pdf-mcp/build/index.js"]`.
 
 ## Dependencies

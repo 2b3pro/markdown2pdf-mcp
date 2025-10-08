@@ -39,6 +39,13 @@ async function renderPDF({
   loadTimeout
 }) {
   let browser;
+  const verbose = process.env.M2P_VERBOSE === 'true';
+
+  if (verbose) {
+    console.error(`[markdown2pdf] Starting PDF rendering`);
+    console.error(`[markdown2pdf] Timeouts - load: ${loadTimeout}ms, render: ${renderDelay}ms`);
+  }
+
   try {
     // Try with our specific Chrome version first
     const chromePath = path.join(
@@ -48,34 +55,73 @@ async function renderPDF({
       'chrome',
       getPlatformPath()
     );
-    
+
     if (!fs.existsSync(chromePath)) {
+      if (verbose) {
+        console.error(`[markdown2pdf] Chrome not found at: ${chromePath}, using fallback`);
+      }
       throw new Error(`Chrome executable not found at: ${chromePath}`);
     }
-    
+
     browser = await puppeteer.launch({
       headless: true,
       executablePath: chromePath,
-      product: 'chrome'
+      product: 'chrome',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage', // Prevent shared memory issues
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--max-old-space-size=4096' // Increase memory limit to 4GB
+      ]
     });
   } catch (err) {
     // Fall back to default Puppeteer-installed Chrome
-    console.error('Falling back to default Chrome installation');
+    if (verbose) {
+      console.error('[markdown2pdf] Falling back to default Chrome installation');
+    }
     browser = await puppeteer.launch({
       headless: true,
       product: 'chrome',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--max-old-space-size=4096'
+      ]
     });
   }
   
   try {
     const page = await browser.newPage();
-    
+
+    // Monitor browser crashes
+    browser.on('disconnected', () => {
+      throw new Error('Browser disconnected unexpectedly. This may indicate an out-of-memory issue or browser crash. Try reducing content size or increasing system resources.');
+    });
+
+    page.on('error', err => {
+      throw new Error(`Page crashed: ${err.message}`);
+    });
+
+    page.on('pageerror', err => {
+      if (verbose) {
+        console.error(`[markdown2pdf] Page error:`, err);
+      }
+    });
+
     // Set viewport
     await page.setViewport({
       width: 1200,
       height: 1600
     });
+
+    if (verbose) {
+      console.error(`[markdown2pdf] Loading HTML from: ${htmlPath}`);
+    }
 
     // Load the HTML file with timeout
     const htmlFileUrl = pathToFileURL(htmlPath).href;
@@ -83,8 +129,15 @@ async function renderPDF({
       waitUntil: 'networkidle0',
       timeout: loadTimeout
     }).catch(err => {
+      if (err.message.includes('timeout')) {
+        throw new Error(`Failed to load HTML content within ${loadTimeout/1000}s timeout. The content may be too large or complex. Error: ${err.message}`);
+      }
       throw new Error(`Failed to load HTML content: ${err.message}`);
     });
+
+    if (verbose) {
+      console.error(`[markdown2pdf] HTML loaded successfully`);
+    }
 
     // Import runnings (header/footer)
     const runningsUrl = pathToFileURL(runningsPath).href;
