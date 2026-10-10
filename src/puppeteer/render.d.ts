@@ -4,6 +4,9 @@ interface RenderPDFOptions {
   runningsPath: string;
   cssPath: string;
   highlightCssPath: string;
+  mermaidPath?: string;
+  assetsDir?: string;
+  allowAllImages?: boolean;
   paperFormat: string;
   paperOrientation: string;
   paperBorder: string;
@@ -12,6 +15,18 @@ interface RenderPDFOptions {
   renderDelay: number;
   loadTimeout: number;
 }
+
+export declare function isAllowedFileUrl(
+  url: string,
+  assetsDir?: string
+): boolean;
+
+export declare function shouldAllowRequest(args: {
+  isMainFrameNavigation: boolean;
+  url: string;
+  assetsDir?: string;
+  allowAllImages?: boolean;
+}): boolean;
 
 declare const renderPDF: (options: RenderPDFOptions) => Promise<boolean>;
 export default renderPDF;

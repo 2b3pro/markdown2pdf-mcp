@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [2.2.0] - 2026-10-09
+
+### Security
+
+- Fixed local file disclosure and SSRF in `create_pdf_from_markdown` ([GHSA-r476-vv4c-fhqx](https://github.com/2b3pro/markdown2pdf-mcp/security/advisories/GHSA-r476-vv4c-fhqx), High). Caller-supplied markdown rendered from a `file://` origin could read arbitrary local files into the PDF and make server-side requests to arbitrary hosts. Thanks to @Zureno for the responsible disclosure.
+- Rendering is now self-contained via Puppeteer request interception: only the top-level document and `data:` URIs load; all `file://` subresources and outbound requests are blocked.
+- Raw HTML in markdown is no longer passed through (`html: false`), so `<iframe>`/`<script>`/`<object>` cannot be injected.
+- Mermaid is now bundled locally (mermaid 10.9.8) instead of loaded from a CDN at render time, removing the last network dependency.
+
+### Added
+
+- `M2P_ASSETS_DIR`: an allowlisted image directory. Relative image references such as `![](chart.png)` resolve inside it; paths are canonicalized so `../` traversal and symlinks cannot escape.
+- `--dangerously-allow-images` flag (or `M2P_DANGEROUSLY_ALLOW_ALL_IMAGES=true`): opt-in override that restores loading images from any local path or URL. Logs a warning on every render. Raw HTML stays disabled.
+
+### Changed
+
+- **Breaking:** by default, images referenced by local file path or external URL are no longer loaded. Use base64 `data:` URIs, `M2P_ASSETS_DIR`, or the override.
+- Browser "disconnected" monitoring no longer throws on normal shutdown (it previously logged a false crash error and could mask the real result).
+
 ## [2.1.7] - 2026-10-09
 
 ### Fixed

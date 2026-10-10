@@ -1,6 +1,6 @@
 {
   "name": "markdown2pdf-mcp",
-  "version": "2.1.7",
+  "version": "2.2.0",
   "description": "MCP server for converting markdown to PDF",
   "keywords": [
     "model",
@@ -44,7 +44,7 @@
   },
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\" && npm run copy-assets",
-    "copy-assets": "mkdir -p build/css build/puppeteer && cp src/css/pdf.css build/css/ && cp src/puppeteer/render.js build/puppeteer/ && cp src/runnings.js build/",
+    "copy-assets": "mkdir -p build/css build/puppeteer/vendor && cp src/css/pdf.css build/css/ && cp src/puppeteer/render.js build/puppeteer/ && cp src/puppeteer/vendor/mermaid.min.js build/puppeteer/vendor/ && cp src/runnings.js build/",
     "prepublishOnly": "npm run build",
     "start": "node build/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"

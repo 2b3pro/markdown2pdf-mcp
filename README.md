@@ -35,9 +35,11 @@ Stick to these supported markdown elements:
 - Tables
 - Blockquotes
 - Links
-- Images (both local files and external URLs)
+- Images (base64 data URIs, or files in `M2P_ASSETS_DIR`; see [Images](#images))
 - Task lists
 - Mermaid diagrams
+
+> **Security note:** Rendering is self-contained. Raw HTML in the markdown is not passed through, and the renderer blocks local file reads and outbound requests by default. See the [security advisory](https://github.com/2b3pro/markdown2pdf-mcp/security/advisories/GHSA-r476-vv4c-fhqx).
 
 ### Mermaid Diagrams
 
@@ -171,6 +173,29 @@ You can configure the output directory in your MCP settings file for apps that u
 `M2P_OUTPUT_DIR` is the default location. A path in `outputFilename` takes precedence: an absolute path is used as-is, and a relative path (e.g., `reports/q3.pdf`) is placed under `M2P_OUTPUT_DIR` (or $HOME if it is not set).
 
 The tool automatically handles file name conflicts by appending incremental numbers (e.g., output.pdf, output-1.pdf, output-2.pdf).
+
+### Images
+
+For security, the renderer does not load images from arbitrary local paths or external URLs. You have three options:
+
+1. **Base64 data URIs** work everywhere with no configuration: `![logo](data:image/png;base64,iVBORw0...)`
+2. **An assets directory.** Set `M2P_ASSETS_DIR` and reference images by relative path. Only files that resolve inside that directory load; `../` traversal, symlinks pointing outside it, and absolute paths elsewhere are blocked.
+
+   ```json
+   "env": {
+     "M2P_ASSETS_DIR": "/path/to/images"
+   }
+   ```
+
+   ```markdown
+   ![Q3 revenue](charts/q3.png)
+   ```
+
+3. **Manual override (unsafe).** Start the server with `--dangerously-allow-images` (or set `M2P_DANGEROUSLY_ALLOW_ALL_IMAGES=true`) to load images from any local path or URL, as in versions before 2.2.0. This reopens the file disclosure and SSRF issues described in the advisory, so only use it when every piece of markdown the server receives is fully trusted. Raw HTML stays disabled either way.
+
+   ```json
+   "args": ["/path/to/markdown2pdf-mcp/build/index.js", "--dangerously-allow-images"]
+   ```
 
 ### Large File Support
 

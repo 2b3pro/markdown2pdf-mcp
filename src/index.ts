@@ -11,7 +11,7 @@ import {
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -97,7 +97,7 @@ export class MarkdownPdfServer {
       tools: [
         {
           name: 'create_pdf_from_markdown',
-          description: 'Convert markdown content to PDF. Supports basic markdown elements like headers, lists, tables, code blocks, blockquotes, images (both local and external URLs), and Mermaid diagrams. Note: Cannot handle LaTeX math equations. Mermaid syntax errors will be displayed directly in the PDF output.',
+          description: 'Convert markdown content to PDF. Supports basic markdown elements like headers, lists, tables, code blocks, blockquotes, images, and Mermaid diagrams. For security, rendering is self-contained: raw HTML in the markdown is not passed through, and images load only from base64 data URIs or, when the server sets M2P_ASSETS_DIR, from relative paths inside that directory (e.g. ![chart](chart.png)). External image URLs and other local paths are not loaded. Note: Cannot handle LaTeX math equations. Mermaid syntax errors will be displayed directly in the PDF output.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -371,7 +371,10 @@ export class MarkdownPdfServer {
         const mdParser = new Remarkable({
           breaks: true,
           preset: 'default',
-          html: true, // Enable HTML tags
+          // Raw HTML in caller markdown is NOT trusted: passing it through would
+          // allow <iframe src="file://...">/<script>/<object> to read local files
+          // and trigger outbound requests when rendered in Chrome. Keep it disabled.
+          html: false,
           highlight: (str: string, language: string) => {
             if (language && language === 'mermaid') {
               return `<div class="mermaid">${str}</div>`;
@@ -393,6 +396,16 @@ export class MarkdownPdfServer {
             ? 'watermark watermark--first-page'
             : 'watermark watermark--all-pages';
 
+        // Optional allowlisted image directory. Relative image references such as
+        // ![](chart.png) resolve against it via <base>; the renderer's request gate
+        // only lets file:// loads through when they stay inside this directory.
+        const assetsDir = process.env.M2P_ASSETS_DIR
+          ? path.resolve(process.env.M2P_ASSETS_DIR)
+          : undefined;
+        const assetsBaseTag = assetsDir
+          ? `<base href="${pathToFileURL(assetsDir + path.sep).href}">`
+          : '';
+
         const headerOffset = '12.5mm';
         const showWatermarkAllPages = Boolean(
           watermark && watermarkScope === 'all-pages'
@@ -404,7 +417,7 @@ export class MarkdownPdfServer {
 <html>
 <head>
   <meta charset="utf-8">
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  ${assetsBaseTag}
   <style>
     @page {
       margin: ${paperBorder};
@@ -462,22 +475,6 @@ export class MarkdownPdfServer {
     </div>
     ${watermark ? `<div class="${watermarkClassName}" data-scope="${watermarkScope}">${watermark}</div>` : ''}
   </div>
-  <script>
-    document.addEventListener('DOMContentLoaded', function () {
-      mermaid.initialize({ startOnLoad: false });
-      try {
-        mermaid.run({
-          nodes: document.querySelectorAll('.mermaid')
-        });
-      } catch (e) {
-        const errorDiv = document.getElementById('mermaid-error');
-        if (errorDiv) {
-          errorDiv.style.display = 'block';
-          errorDiv.innerText = e.message;
-        }
-      }
-    });
-  </script>
 </body>
 </html>`;
 
@@ -503,6 +500,11 @@ export class MarkdownPdfServer {
           runningsPath: path.resolve(__dirname, 'runnings.js'),
           cssPath: path.resolve(__dirname, 'css', 'pdf.css'),
           highlightCssPath: '',
+          mermaidPath: path.resolve(__dirname, 'puppeteer', 'vendor', 'mermaid.min.js'),
+          assetsDir,
+          allowAllImages:
+            process.argv.includes('--dangerously-allow-images') ||
+            process.env.M2P_DANGEROUSLY_ALLOW_ALL_IMAGES === 'true',
           paperFormat,
           paperOrientation,
           paperBorder,
