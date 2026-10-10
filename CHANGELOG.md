@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [2.1.7] - 2026-10-09
+
+### Fixed
+
+- A directory in `outputFilename` is now honored instead of being doubled or appended to the output directory (e.g. `sub/x.pdf` no longer becomes `sub/sub/x.pdf`, and absolute Windows paths no longer produce `D:\out\C:\docs\x.pdf`) ([#9](https://github.com/2b3pro/markdown2pdf-mcp/issues/9))
+- The reported output path now reflects the incremented filename (`x-1.pdf`) when a file with the same name already exists
+
+### Changed
+
+- `outputFilename` path precedence: an absolute path is used as-is; a relative path or bare filename is placed under `M2P_OUTPUT_DIR` (or `$HOME` if unset). Relative paths previously resolved against the server's working directory
+- README hero image and Support section
+
 ## [2.1.6] - 2025-10-07
 
 ### Added

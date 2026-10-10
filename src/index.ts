@@ -107,7 +107,7 @@ export class MarkdownPdfServer {
               },
               outputFilename: {
                 type: 'string',
-                description: 'Create a filename for the PDF file to be saved (default: "final-output.pdf"). The environmental variable M2P_OUTPUT_DIR sets the output path directory. If directory is not provided, it will default to user\'s HOME directory.'
+                description: 'Filename or path for the PDF (default: "output.pdf"). An absolute path is used as-is; a relative path or bare filename is placed under the M2P_OUTPUT_DIR environment variable, or the user\'s HOME directory if it is not set.'
               },
               paperFormat: {
                 type: 'string',
@@ -177,24 +177,15 @@ export class MarkdownPdfServer {
         showPageNumbers?: boolean;
       };
 
-      // Get output directory from environment variable, outputFilename path, or default to user's home
-      const outputDir = (() => {
-        if (process.env.M2P_OUTPUT_DIR) {
-          return path.resolve(process.env.M2P_OUTPUT_DIR);
-        }
+      // Default directory: M2P_OUTPUT_DIR if set, otherwise the user's home directory
+      const baseDir = path.resolve(process.env.M2P_OUTPUT_DIR || os.homedir());
 
-        if (args.outputFilename && typeof args.outputFilename === 'string') {
-          const hasExplicitDirectory =
-            path.isAbsolute(args.outputFilename) ||
-            path.dirname(args.outputFilename) !== '.';
-
-          if (hasExplicitDirectory) {
-            return path.dirname(path.resolve(args.outputFilename));
-          }
-        }
-
-        return path.resolve(os.homedir());
-      })();
+      // A directory in outputFilename takes precedence: absolute paths are used as-is,
+      // relative paths land under baseDir, and a bare filename stays in baseDir
+      const outputDir = path.resolve(
+        baseDir,
+        typeof args.outputFilename === 'string' ? path.dirname(args.outputFilename) : '.'
+      );
 
       // Ensure output directory exists
       if (!fs.existsSync(outputDir)) {
@@ -263,7 +254,7 @@ export class MarkdownPdfServer {
         : `${outputFilename}.pdf`;
 
       // Combine output directory with filename
-      const outputPath = path.join(outputDir, filename);
+      const outputPath = path.join(outputDir, path.basename(filename));
 
       try {
         // Track operation progress through response content
@@ -273,7 +264,8 @@ export class MarkdownPdfServer {
         progressUpdates.push(`Content size: ${Math.round(contentSize / 1024)}KB (${lineCount} lines)`);
         progressUpdates.push(`Using output path: ${outputPath}`);
 
-        await this.convertToPdf(
+        // convertToPdf may increment the filename to avoid overwriting, so use the path it returns
+        const finalPath = await this.convertToPdf(
           markdown,
           outputPath,
           paperFormat,
@@ -287,13 +279,13 @@ export class MarkdownPdfServer {
         );
 
         // Verify file was created
-        if (!fs.existsSync(outputPath)) {
+        if (!fs.existsSync(finalPath)) {
           throw new McpError(
             ErrorCode.InternalError,
             'PDF file was not created',
             {
               details: {
-                outputPath,
+                outputPath: finalPath,
                 paperFormat,
                 paperOrientation
               }
@@ -302,7 +294,7 @@ export class MarkdownPdfServer {
         }
 
         // Ensure absolute path is returned
-        const absolutePath = path.resolve(outputPath);
+        const absolutePath = path.resolve(finalPath);
         progressUpdates.push(`PDF file created successfully at: ${absolutePath}`);
         progressUpdates.push(`File exists: ${fs.existsSync(absolutePath)}`);
 
@@ -364,8 +356,8 @@ export class MarkdownPdfServer {
     showPageNumbers: boolean = false,
     renderDelay: number = 7000,
     loadTimeout: number = 60000
-  ): Promise<void> {
-    return new Promise<void>(async (resolve, reject) => {
+  ): Promise<string> {
+    return new Promise<string>(async (resolve, reject) => {
       try {
         // Ensure output directory exists
         const outputDir = path.dirname(outputPath);
@@ -520,7 +512,7 @@ export class MarkdownPdfServer {
           loadTimeout
         });
 
-        resolve();
+        resolve(outputPath);
       } catch (error) {
         reject(new McpError(
           ErrorCode.InternalError,

@@ -1,8 +1,6 @@
-![](markdown-to-pdf-header.png)
-
-[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/2b3pro-markdown2pdf-mcp-badge.png)](https://mseep.ai/app/2b3pro-markdown2pdf-mcp)
-
 # Markdown2PDF MCP Server (markdown2pdf-mcp)
+
+![markdown2pdf-mcp: Markdown in, polished PDF out](assets/hero.png)
 
 An MCP server for converting Markdown documents to PDF files. This server provides a simple and efficient way to generate PDFs from Markdown content with support for syntax highlighting, custom styling, optional page numbers, and flexible watermark placement (first page only or all pages).
 
@@ -99,7 +97,7 @@ The server provides a single tool `create_pdf_from_markdown` with the following 
   markdown: string;    // Markdown content to convert
 
   // Optional parameters with defaults
-  outputFilename?: string;  // Filename for the PDF (e.g., "output.pdf")
+  outputFilename?: string;  // Filename or path for the PDF (e.g., "output.pdf", "reports/q3.pdf", "/abs/path/q3.pdf")
   paperFormat?: string;     // 'letter' (default), 'a4', 'a3', 'a5', 'legal', 'tabloid'
   paperOrientation?: string; // 'portrait' (default), 'landscape'
   paperBorder?: string;     // '2cm' (default), accepts decimal values with CSS units (e.g., '1.5cm', '2.5mm', '0.5in', '10.5px')
@@ -170,6 +168,8 @@ You can configure the output directory in your MCP settings file for apps that u
 }
 ```
 
+`M2P_OUTPUT_DIR` is the default location. A path in `outputFilename` takes precedence: an absolute path is used as-is, and a relative path (e.g., `reports/q3.pdf`) is placed under `M2P_OUTPUT_DIR` (or $HOME if it is not set).
+
 The tool automatically handles file name conflicts by appending incremental numbers (e.g., output.pdf, output-1.pdf, output-2.pdf).
 
 ### Large File Support
@@ -232,6 +232,18 @@ npm run build
 # Start the server
 npm start
 ```
+
+---
+
+## Support
+
+Markdown2PDF MCP is free and open source. If it saves you time turning Markdown into polished PDFs, consider buying me a coffee and croissant! It helps keep the updates coming.
+
+<a href="https://paypal.me/2b3/5"><img src="https://img.shields.io/badge/Donate-PayPal-blue.svg" alt="Donate with PayPal" /></a>
+
+**[Buy me a cup of coffee and croissant!](https://paypal.me/2b3/10)**
+
+---
 
 ## License
 

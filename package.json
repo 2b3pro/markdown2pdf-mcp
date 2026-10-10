@@ -1,6 +1,6 @@
 {
   "name": "markdown2pdf-mcp",
-  "version": "2.1.6",
+  "version": "2.1.7",
   "description": "MCP server for converting markdown to PDF",
   "keywords": [
     "model",
@@ -34,7 +34,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "README.md",
-    "markdown-to-pdf-header.png"
+    "assets/hero.png"
   ],
   "directories": {
     "test": "test"

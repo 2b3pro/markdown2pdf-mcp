@@ -279,6 +279,72 @@ describe('MarkdownPdfServer', () => {
     }
   });
 
+  it('reports the incremented path for duplicate filenames', async () => {
+    const tempDir = tmp.dirSync({ unsafeCleanup: true });
+    process.env.M2P_OUTPUT_DIR = tempDir.name;
+
+    try {
+      await callTool({ markdown: '# Test', outputFilename: 'reported.pdf' });
+      const response = await callTool(
+        { markdown: '# Test', outputFilename: 'reported.pdf' },
+        '2'
+      );
+
+      expect(response.content[0].text).toContain(
+        `PDF file created successfully at: ${path.join(tempDir.name, 'reported-1.pdf')}`
+      );
+    } finally {
+      tempDir.removeCallback();
+    }
+  });
+
+  it('uses an absolute outputFilename as-is, even when M2P_OUTPUT_DIR is set', async () => {
+    const envDir = tmp.dirSync({ unsafeCleanup: true });
+    const targetDir = tmp.dirSync({ unsafeCleanup: true });
+    process.env.M2P_OUTPUT_DIR = envDir.name;
+
+    try {
+      const target = path.join(targetDir.name, 'absolute.pdf');
+      await callTool({ markdown: '# Test', outputFilename: target });
+
+      const callArgs = renderMock.mock.calls.at(-1)?.[0] as { pdfPath: string };
+      expect(callArgs.pdfPath).toBe(target);
+    } finally {
+      envDir.removeCallback();
+      targetDir.removeCallback();
+    }
+  });
+
+  it('does not double the directory of an absolute outputFilename when M2P_OUTPUT_DIR is unset', async () => {
+    const targetDir = tmp.dirSync({ unsafeCleanup: true });
+
+    try {
+      const target = path.join(targetDir.name, 'no-env.pdf');
+      await callTool({ markdown: '# Test', outputFilename: target });
+
+      const callArgs = renderMock.mock.calls.at(-1)?.[0] as { pdfPath: string };
+      expect(callArgs.pdfPath).toBe(target);
+    } finally {
+      targetDir.removeCallback();
+    }
+  });
+
+  it('resolves a relative outputFilename under M2P_OUTPUT_DIR without doubling the directory', async () => {
+    const tempDir = tmp.dirSync({ unsafeCleanup: true });
+    process.env.M2P_OUTPUT_DIR = tempDir.name;
+
+    try {
+      await callTool({ markdown: '# Test', outputFilename: 'sub/relative.pdf' });
+
+      const callArgs = renderMock.mock.calls.at(-1)?.[0] as { pdfPath: string };
+      expect(callArgs.pdfPath).toBe(
+        path.join(tempDir.name, 'sub', 'relative.pdf')
+      );
+    } finally {
+      tempDir.removeCallback();
+    }
+  });
+
   it('defaults output directory to HOME when none specified', async () => {
     const response = await callTool({
       markdown: '# Test',
