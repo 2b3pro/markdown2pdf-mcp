@@ -31,6 +31,22 @@ const renderMock = jest.fn(
   }
 );
 
+const batchRenderMock = jest.fn(
+  async (items: any[]) => {
+    for (const item of items) {
+      createdPdfPaths.push(item.pdfPath);
+      await fs.promises.mkdir(path.dirname(item.pdfPath), { recursive: true });
+      await fs.promises.writeFile(item.pdfPath, 'BATCH_PDF');
+    }
+    return {
+      total: items.length,
+      successful: items.length,
+      failed: 0,
+      results: items.map((i) => ({ pdfPath: i.pdfPath, success: true })),
+    };
+  }
+);
+
 const serverConstructor = jest.fn(
   (info: any) => {
     const typedInfo = info as { name: string; version: string };
@@ -99,6 +115,7 @@ await jest.unstable_mockModule('@modelcontextprotocol/sdk/server/stdio.js', () =
 await jest.unstable_mockModule('../src/puppeteer/render.js', () => ({
   __esModule: true,
   default: renderMock,
+  renderBatchPDF: batchRenderMock,
 }));
 
 describe('MarkdownPdfServer', () => {
@@ -114,6 +131,7 @@ describe('MarkdownPdfServer', () => {
     listToolsHandler = undefined;
     callToolHandler = undefined;
     renderMock.mockClear();
+    batchRenderMock.mockClear();
     serverInfo = undefined;
     server = new MarkdownPdfServer();
   });
@@ -139,7 +157,8 @@ describe('MarkdownPdfServer', () => {
     return handler;
   };
 
-  const callTool = async (
+  const invokeTool = async (
+    name: string,
     argumentsObj: Record<string, unknown>,
     id = '1'
   ) => {
@@ -149,11 +168,18 @@ describe('MarkdownPdfServer', () => {
       jsonrpc: '2.0',
       method: 'tools/call',
       params: {
-        name: 'create_pdf_from_markdown',
+        name,
         arguments: argumentsObj,
       },
       id,
     });
+  };
+
+  const callTool = async (
+    argumentsObj: Record<string, unknown>,
+    id = '1'
+  ) => {
+    return invokeTool('create_pdf_from_markdown', argumentsObj, id);
   };
 
   it('initializes the server with package metadata', () => {
@@ -165,7 +191,7 @@ describe('MarkdownPdfServer', () => {
     });
   });
 
-  it('registers and returns the available tool', async () => {
+  it('registers and returns the available tools', async () => {
     const handler = getHandler('tools/list');
     const response = await handler({
       jsonrpc: '2.0',
@@ -174,9 +200,14 @@ describe('MarkdownPdfServer', () => {
       id: '1',
     });
 
-    expect(response.tools).toHaveLength(1);
-    expect(response.tools[0].name).toBe('create_pdf_from_markdown');
-    expect(response.tools[0].inputSchema.required).toContain('markdown');
+    expect(response.tools).toHaveLength(3);
+    const names = response.tools.map((t: any) => t.name);
+    expect(names).toContain('create_pdf_from_markdown');
+    expect(names).toContain('batch_create_pdf');
+    expect(names).toContain('validate_markdown');
+
+    const createTool = response.tools.find((t: any) => t.name === 'create_pdf_from_markdown');
+    expect(createTool.inputSchema.required).toContain('markdown');
   });
 
   it('converts markdown to PDF', async () => {
@@ -358,6 +389,118 @@ describe('MarkdownPdfServer', () => {
     expect(match?.[1]).toContain(
       path.join(os.homedir(), 'home-test.pdf')
     );
+  });
+
+  it('supports inputPath to convert local file directly', async () => {
+    const tempDir = tmp.dirSync({ unsafeCleanup: true });
+    process.env.M2P_OUTPUT_DIR = tempDir.name;
+    const inputMdPath = path.join(tempDir.name, 'disk-sample.md');
+    fs.writeFileSync(inputMdPath, '# From File\nContent on disk.');
+
+    try {
+      const response = await callTool({
+        inputPath: inputMdPath,
+        outputFilename: 'from-file.pdf',
+        theme: 'github',
+      });
+
+      expect(response.content[0].text).toContain('PDF file created successfully at:');
+      expect(renderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pdfPath: expect.stringContaining('from-file.pdf'),
+        })
+      );
+    } finally {
+      tempDir.removeCallback();
+    }
+  });
+
+  it('supports custom margin, theme, customCss, and header/footer text', async () => {
+    const tempDir = tmp.dirSync({ unsafeCleanup: true });
+    process.env.M2P_OUTPUT_DIR = tempDir.name;
+
+    try {
+      await callTool({
+        markdown: '# Styled Report',
+        outputFilename: 'styled.pdf',
+        theme: 'report',
+        customCss: 'body { color: red; }',
+        margin: { top: '30mm', right: '15mm', bottom: '30mm', left: '15mm' },
+        headerText: 'Company Confidential',
+        footerText: 'Internal Use Only',
+      });
+
+      expect(renderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          margin: { top: '30mm', right: '15mm', bottom: '30mm', left: '15mm' },
+          headerText: 'Company Confidential',
+          footerText: 'Internal Use Only',
+        })
+      );
+    } finally {
+      tempDir.removeCallback();
+    }
+  });
+
+  it('processes batch conversions with shared config in batch_create_pdf', async () => {
+    const tempDir = tmp.dirSync({ unsafeCleanup: true });
+    process.env.M2P_OUTPUT_DIR = tempDir.name;
+
+    try {
+      const response = await invokeTool('batch_create_pdf', {
+        documents: [
+          { markdown: '# Doc 1', outputFilename: 'doc1.pdf' },
+          { markdown: '# Doc 2', outputFilename: 'doc2.pdf', theme: 'academic' },
+        ],
+        sharedConfig: {
+          paperFormat: 'a4',
+          theme: 'github',
+        },
+      });
+
+      expect(batchRenderMock).toHaveBeenCalledTimes(1);
+      const batchArgs = batchRenderMock.mock.calls[0][0];
+      expect(batchArgs).toHaveLength(2);
+      expect(batchArgs[0].paperFormat).toBe('a4');
+      expect(response.content[0].text).toContain('**Total Documents:** 2');
+      expect(response.content[0].text).toContain('**Successful:** 2');
+    } finally {
+      tempDir.removeCallback();
+    }
+  });
+
+  it('rejects empty documents array in batch_create_pdf', async () => {
+    await expect(
+      invokeTool('batch_create_pdf', { documents: [] })
+    ).rejects.toThrow('batch_create_pdf requires a non-empty "documents" array');
+  });
+
+  it('validates markdown successfully for clean content in validate_markdown', async () => {
+    const response = await invokeTool('validate_markdown', {
+      markdown: '# Clean Document\nThis is a standard markdown document.',
+    });
+
+    expect(response.isError).toBe(false);
+    expect(response.content[0].text).toContain('**Status:** ✅ Valid');
+    expect(response.content[0].text).toContain('No issues found!');
+  });
+
+  it('detects LaTeX math and raw HTML in validate_markdown', async () => {
+    const response = await invokeTool('validate_markdown', {
+      markdown: '# Math Document\nFormula: $E = mc^2$ and <script>alert(1)</script>',
+    });
+
+    expect(response.content[0].text).toContain('LaTeX math equations ($...$ or $$...$$) detected');
+    expect(response.content[0].text).toContain('Raw HTML tags detected in markdown');
+  });
+
+  it('detects Mermaid syntax warnings in validate_markdown', async () => {
+    const response = await invokeTool('validate_markdown', {
+      markdown: '# Mermaid Test\n```mermaid\ninvalidHeader\nA-->B[\n```',
+    });
+
+    expect(response.content[0].text).toContain('unrecognized header');
+    expect(response.content[0].text).toContain('unbalanced delimiters');
   });
 
   it('throws for unknown tools', async () => {

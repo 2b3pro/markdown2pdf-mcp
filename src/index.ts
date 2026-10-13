@@ -6,13 +6,15 @@ import {
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
-  Request,
 } from '@modelcontextprotocol/sdk/types.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
+import { getThemeCss, THEME_NAMES } from './themes.js';
+import { validateMarkdown } from './validator.js';
+
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const hljs = require('highlight.js');
@@ -24,8 +26,35 @@ const __dirname = path.dirname(__filename);
 
 tmp.setGracefulCleanup();
 
+export interface MarginSettings {
+  top?: string;
+  right?: string;
+  bottom?: string;
+  left?: string;
+}
+
+export interface ConvertOptions {
+  markdown?: string;
+  inputPath?: string;
+  outputFilename?: string;
+  paperFormat?: string;
+  paperOrientation?: string;
+  paperBorder?: string;
+  margin?: MarginSettings;
+  watermark?: string;
+  watermarkScope?: 'all-pages' | 'first-page';
+  showPageNumbers?: boolean;
+  theme?: string;
+  customCss?: string;
+  headerText?: string;
+  footerText?: string;
+}
+
 export class MarkdownPdfServer {
   private server: Server;
+  private transport: StdioServerTransport | null = null;
+  private isRunning: boolean = false;
+  private signalCleanupHandlers: Array<() => void> = [];
 
   constructor() {
     this.server = new Server(
@@ -35,61 +64,27 @@ export class MarkdownPdfServer {
       },
       {
         capabilities: {
-          tools: {
-            create_pdf_from_markdown: true
-          },
+          tools: {},
         },
       }
     );
 
     this.setupToolHandlers();
 
-    // Set up error handler first to ensure it's available for all operations
+    // Set up error handler
     this.server.onerror = (error: Error): never => {
-      // Convert all errors to McpError for consistent handling
       const mcpError = new McpError(
         ErrorCode.InternalError,
         `Server error: ${error.message}`,
         {
           details: {
             name: error.name,
-            stack: error.stack
-          }
+            stack: error.stack,
+          },
         }
       );
       throw mcpError;
     };
-
-    // Handle process termination gracefully
-    const handleShutdown = async (signal: string) => {
-      try {
-        await this.server.close();
-      } catch (error) {
-        // Convert unknown error to McpError
-        const mcpError = new McpError(
-          ErrorCode.InternalError,
-          `Server shutdown error during ${signal}: ${error instanceof Error ? error.message : String(error)}`,
-          {
-            details: {
-              signal,
-              ...(error instanceof Error ? {
-                name: error.name,
-                stack: error.stack
-              } : {})
-            }
-          }
-        );
-        // Throw error directly to avoid stdio interference
-        throw mcpError;
-      } finally {
-        // Ensure clean exit after error is handled
-        process.exit(0);
-      }
-    };
-
-    // Set up signal handlers
-    process.once('SIGINT', () => handleShutdown('SIGINT').catch(() => process.exit(1)));
-    process.once('SIGTERM', () => handleShutdown('SIGTERM').catch(() => process.exit(1)));
   }
 
   private setupToolHandlers() {
@@ -97,7 +92,8 @@ export class MarkdownPdfServer {
       tools: [
         {
           name: 'create_pdf_from_markdown',
-          description: 'Convert markdown content to PDF. Supports basic markdown elements like headers, lists, tables, code blocks, blockquotes, images, and Mermaid diagrams. For security, rendering is self-contained: raw HTML in the markdown is not passed through, and images load only from base64 data URIs or, when the server sets M2P_ASSETS_DIR, from relative paths inside that directory (e.g. ![chart](chart.png)). External image URLs and other local paths are not loaded. Note: Cannot handle LaTeX math equations. Mermaid syntax errors will be displayed directly in the PDF output.',
+          description:
+            'Convert markdown content to PDF. Supports headers, lists, tables, code blocks with syntax highlighting, blockquotes, images, and Mermaid diagrams. Built-in themes include default, github, academic, report, and minimal. For security, rendering is self-contained: raw HTML is not executed, and images load only from base64 data URIs or relative paths inside M2P_ASSETS_DIR. External URLs are blocked by default.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -105,229 +101,233 @@ export class MarkdownPdfServer {
                 type: 'string',
                 description: 'Markdown content to convert to PDF',
               },
+              inputPath: {
+                type: 'string',
+                description:
+                  'Path to a local markdown file on disk to convert. Alternative to passing raw markdown string.',
+              },
               outputFilename: {
                 type: 'string',
-                description: 'Filename or path for the PDF (default: "output.pdf"). An absolute path is used as-is; a relative path or bare filename is placed under the M2P_OUTPUT_DIR environment variable, or the user\'s HOME directory if it is not set.'
+                description:
+                  'Filename or path for the PDF (default: "output.pdf"). Absolute paths are used as-is; relative paths are placed under M2P_OUTPUT_DIR or HOME.',
               },
               paperFormat: {
                 type: 'string',
                 description: 'Paper format for the PDF (default: letter)',
                 enum: ['letter', 'a4', 'a3', 'a5', 'legal', 'tabloid'],
-                default: 'letter'
+                default: 'letter',
               },
               paperOrientation: {
                 type: 'string',
                 description: 'Paper orientation for the PDF (default: portrait)',
                 enum: ['portrait', 'landscape'],
-                default: 'portrait'
+                default: 'portrait',
               },
               paperBorder: {
                 type: 'string',
-                description: 'Border margin for the PDF (default: 2cm). Use CSS units (cm, mm, in, px)',
-                pattern: '^[0-9]+(\.[0-9]+)?(cm|mm|in|px)$',
-                default: '20mm'
+                description:
+                  'Uniform border margin for the PDF (default: 2cm). Use CSS units (cm, mm, in, px).',
+                pattern: '^[0-9]+(\\.[0-9]+)?(cm|mm|in|px)$',
+                default: '20mm',
+              },
+              margin: {
+                type: 'object',
+                description:
+                  'Asymmetric margins for the PDF (top, right, bottom, left). Overrides paperBorder when provided.',
+                properties: {
+                  top: { type: 'string', description: 'Top margin (e.g. "25mm", "1in")' },
+                  right: { type: 'string', description: 'Right margin (e.g. "20mm", "0.75in")' },
+                  bottom: { type: 'string', description: 'Bottom margin (e.g. "25mm", "1in")' },
+                  left: { type: 'string', description: 'Left margin (e.g. "20mm", "0.75in")' },
+                },
+              },
+              theme: {
+                type: 'string',
+                description:
+                  'Visual styling theme: "default" (modern clean), "github" (GitHub markdown), "academic" (formal paper), "report" (executive report), "minimal" (lightweight minimalist).',
+                enum: THEME_NAMES,
+                default: 'default',
+              },
+              customCss: {
+                type: 'string',
+                description: 'Optional custom CSS to inject into the document for custom styling.',
               },
               watermark: {
                 type: 'string',
-                description: 'Optional watermark text (max 15 characters, uppercase), e.g. "DRAFT", "PRELIMINARY", "CONFIDENTIAL", "FOR REVIEW", etc',
+                description:
+                  'Optional watermark text (max 15 characters, uppercase), e.g. "DRAFT", "CONFIDENTIAL".',
                 maxLength: 15,
-                pattern: '^[A-Z0-9\\s-]+$'
+                pattern: '^[A-Z0-9\\s-]+$',
               },
               watermarkScope: {
                 type: 'string',
-                description: 'Control watermark visibility: "all-pages" repeats on every page, "first-page" displays on the first page only (default: all-pages)',
+                description:
+                  'Control watermark visibility: "all-pages" repeats on every page, "first-page" displays on first page only (default: all-pages).',
                 enum: ['all-pages', 'first-page'],
-                default: 'all-pages'
+                default: 'all-pages',
               },
               showPageNumbers: {
                 type: 'boolean',
                 description: 'Include page numbers in the PDF footer (default: false)',
-                default: false
-              }
+                default: false,
+              },
+              headerText: {
+                type: 'string',
+                description: 'Optional custom text to display in the header.',
+              },
+              footerText: {
+                type: 'string',
+                description: 'Optional custom text to display in the footer.',
+              },
             },
-            required: ['markdown']
+            required: ['markdown'],
+          },
+        },
+        {
+          name: 'batch_create_pdf',
+          description:
+            'Batch convert multiple Markdown documents or files to PDF in a single call using a shared browser session for fast processing.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              documents: {
+                type: 'array',
+                description: 'List of documents to convert in this batch.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    markdown: { type: 'string', description: 'Markdown content' },
+                    inputPath: { type: 'string', description: 'Path to markdown file on disk' },
+                    outputFilename: { type: 'string', description: 'Destination PDF filename or path' },
+                    paperFormat: { type: 'string', enum: ['letter', 'a4', 'a3', 'a5', 'legal', 'tabloid'] },
+                    paperOrientation: { type: 'string', enum: ['portrait', 'landscape'] },
+                    paperBorder: { type: 'string' },
+                    margin: {
+                      type: 'object',
+                      properties: {
+                        top: { type: 'string' },
+                        right: { type: 'string' },
+                        bottom: { type: 'string' },
+                        left: { type: 'string' },
+                      },
+                    },
+                    theme: { type: 'string', enum: THEME_NAMES },
+                    customCss: { type: 'string' },
+                    watermark: { type: 'string' },
+                    watermarkScope: { type: 'string', enum: ['all-pages', 'first-page'] },
+                    showPageNumbers: { type: 'boolean' },
+                    headerText: { type: 'string' },
+                    footerText: { type: 'string' },
+                  },
+                  required: ['outputFilename'],
+                },
+              },
+              sharedConfig: {
+                type: 'object',
+                description:
+                  'Default configuration applied to all documents in the batch unless overridden.',
+                properties: {
+                  paperFormat: { type: 'string', enum: ['letter', 'a4', 'a3', 'a5', 'legal', 'tabloid'], default: 'letter' },
+                  paperOrientation: { type: 'string', enum: ['portrait', 'landscape'], default: 'portrait' },
+                  paperBorder: { type: 'string', default: '20mm' },
+                  theme: { type: 'string', enum: THEME_NAMES, default: 'default' },
+                  showPageNumbers: { type: 'boolean', default: false },
+                  watermark: { type: 'string' },
+                  watermarkScope: { type: 'string', enum: ['all-pages', 'first-page'], default: 'all-pages' },
+                },
+              },
+            },
+            required: ['documents'],
+          },
+        },
+        {
+          name: 'validate_markdown',
+          description:
+            'Pre-flight validation for markdown content before PDF conversion. Checks size limits, detects unsupported LaTeX math formulas, alerts about stripped HTML tags, validates Mermaid diagram structure, and checks image paths without launching a browser.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              markdown: {
+                type: 'string',
+                description: 'Markdown content to validate',
+              },
+              inputPath: {
+                type: 'string',
+                description: 'Path to markdown file on disk to validate',
+              },
+            },
           },
         },
       ],
     }));
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      if (request.params.name !== 'create_pdf_from_markdown') {
-        throw new McpError(
-          ErrorCode.MethodNotFound,
-          `Unknown tool: ${request.params.name}`
-        );
-      }
+      const toolName = request.params.name;
+      const rawArgs = request.params.arguments || {};
 
-      if (!request.params.arguments) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          'No arguments provided'
-        );
-      }
+      switch (toolName) {
+        case 'create_pdf_from_markdown':
+          return await this.handleCreatePdf(rawArgs as ConvertOptions);
 
-      const args = request.params.arguments as {
-        markdown: string;
-        outputFilename?: string;
-        paperFormat?: string;
-        paperOrientation?: string;
-        paperBorder?: string;
-        watermark?: string;
-        watermarkScope?: 'all-pages' | 'first-page';
-        showPageNumbers?: boolean;
-      };
+        case 'batch_create_pdf':
+          return await this.handleBatchCreatePdf(rawArgs as {
+            documents: ConvertOptions[];
+            sharedConfig?: Partial<ConvertOptions>;
+          });
 
-      // Default directory: M2P_OUTPUT_DIR if set, otherwise the user's home directory
-      const baseDir = path.resolve(process.env.M2P_OUTPUT_DIR || os.homedir());
+        case 'validate_markdown':
+          return await this.handleValidateMarkdown(rawArgs as {
+            markdown?: string;
+            inputPath?: string;
+          });
 
-      // A directory in outputFilename takes precedence: absolute paths are used as-is,
-      // relative paths land under baseDir, and a bare filename stays in baseDir
-      const outputDir = path.resolve(
-        baseDir,
-        typeof args.outputFilename === 'string' ? path.dirname(args.outputFilename) : '.'
-      );
-
-      // Ensure output directory exists
-      if (!fs.existsSync(outputDir)) {
-        fs.mkdirSync(outputDir, { recursive: true });
-      }
-
-      const {
-        markdown,
-        outputFilename = 'output.pdf',
-        paperFormat = 'letter',
-        paperOrientation = 'portrait',
-        paperBorder = '2cm',
-        watermark = '',
-        watermarkScope = 'all-pages',
-        showPageNumbers = false
-      } = args;
-
-      if (typeof markdown !== 'string' || markdown.trim().length === 0) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          'Missing required argument: markdown'
-        );
-      }
-
-      // Calculate content size and validate
-      const contentSize = markdown.length;
-      const lineCount = markdown.split('\n').length;
-
-      // Hard limit check - prevent extremely large files that will definitely fail
-      const MAX_SIZE = 10 * 1024 * 1024; // 10MB
-      if (contentSize > MAX_SIZE) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          `Markdown content too large (${Math.round(contentSize / 1024 / 1024)}MB). Maximum supported size is ${MAX_SIZE / 1024 / 1024}MB. Consider splitting the content into smaller documents.`,
-          {
-            details: {
-              contentSize,
-              maxSize: MAX_SIZE,
-              lineCount
-            }
-          }
-        );
-      }
-
-      // Calculate dynamic timeouts based on content size
-      // Base: 60s load, 7s render. Add 1s per 10KB and 1s per 100 lines
-      const baseLoadTimeout = 60000;
-      const baseRenderDelay = 7000;
-      const loadTimeout = Math.min(
-        baseLoadTimeout + Math.floor(contentSize / 10000) * 1000,
-        300000 // Max 5 minutes
-      );
-      const renderDelay = Math.min(
-        baseRenderDelay + Math.floor(lineCount / 100) * 1000,
-        30000 // Max 30 seconds
-      );
-
-      if (contentSize > 500000) { // ~500KB
-        console.error(`[markdown2pdf] Warning: Large markdown content detected (${Math.round(contentSize / 1024)}KB, ${lineCount} lines). Processing may take longer than usual.`);
-        console.error(`[markdown2pdf] Using extended timeouts: load=${loadTimeout/1000}s, render=${renderDelay/1000}s`);
-      }
-
-      // Ensure output filename has .pdf extension
-      const filename = outputFilename.toLowerCase().endsWith('.pdf')
-        ? outputFilename
-        : `${outputFilename}.pdf`;
-
-      // Combine output directory with filename
-      const outputPath = path.join(outputDir, path.basename(filename));
-
-      try {
-        // Track operation progress through response content
-        const progressUpdates: string[] = [];
-
-        progressUpdates.push(`Starting PDF conversion (format: ${paperFormat}, orientation: ${paperOrientation})`);
-        progressUpdates.push(`Content size: ${Math.round(contentSize / 1024)}KB (${lineCount} lines)`);
-        progressUpdates.push(`Using output path: ${outputPath}`);
-
-        // convertToPdf may increment the filename to avoid overwriting, so use the path it returns
-        const finalPath = await this.convertToPdf(
-          markdown,
-          outputPath,
-          paperFormat,
-          paperOrientation,
-          paperBorder,
-          watermark,
-          watermarkScope,
-          showPageNumbers,
-          renderDelay,
-          loadTimeout
-        );
-
-        // Verify file was created
-        if (!fs.existsSync(finalPath)) {
+        default:
           throw new McpError(
-            ErrorCode.InternalError,
-            'PDF file was not created',
-            {
-              details: {
-                outputPath: finalPath,
-                paperFormat,
-                paperOrientation
-              }
-            }
+            ErrorCode.MethodNotFound,
+            `Unknown tool: ${toolName}`
           );
-        }
-
-        // Ensure absolute path is returned
-        const absolutePath = path.resolve(finalPath);
-        progressUpdates.push(`PDF file created successfully at: ${absolutePath}`);
-        progressUpdates.push(`File exists: ${fs.existsSync(absolutePath)}`);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: progressUpdates.join('\n')
-            },
-          ],
-        };
-      } catch (error: unknown) {
-        if (error instanceof Error) {
-          throw new McpError(
-            ErrorCode.InternalError,
-            `PDF generation failed: ${error.message}`,
-            {
-              details: {
-                name: error.name,
-                stack: error.stack,
-                outputPath,
-                paperFormat,
-                paperOrientation
-              }
-            }
-          );
-        }
-        throw new McpError(
-          ErrorCode.InternalError,
-          `PDF generation failed: ${String(error)}`
-        );
       }
     });
+  }
+
+  private resolveMarkdownContent(args: { markdown?: string; inputPath?: string }): string {
+    if (typeof args.markdown === 'string' && args.markdown.trim().length > 0) {
+      return args.markdown;
+    }
+
+    if (typeof args.inputPath === 'string' && args.inputPath.trim().length > 0) {
+      const fullInputPath = path.resolve(args.inputPath);
+      if (!fs.existsSync(fullInputPath)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Input file not found at: ${fullInputPath}`
+        );
+      }
+      return fs.readFileSync(fullInputPath, 'utf8');
+    }
+
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      'Missing required argument: markdown'
+    );
+  }
+
+  private resolveOutputPath(outputFilename: string = 'output.pdf'): string {
+    const baseDir = path.resolve(process.env.M2P_OUTPUT_DIR || os.homedir());
+    const outputDir = path.resolve(
+      baseDir,
+      typeof outputFilename === 'string' ? path.dirname(outputFilename) : '.'
+    );
+
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const filename = outputFilename.toLowerCase().endsWith('.pdf')
+      ? outputFilename
+      : `${outputFilename}.pdf`;
+
+    return path.join(outputDir, path.basename(filename));
   }
 
   private getIncrementalPath(basePath: string): string {
@@ -345,90 +345,85 @@ export class MarkdownPdfServer {
     return newPath;
   }
 
-  private async convertToPdf(
-    markdown: string,
-    outputPath: string,
-    paperFormat: string = 'letter',
-    paperOrientation: string = 'portrait',
-    paperBorder: string = '2cm',
-    watermark: string = '',
-    watermarkScope: 'all-pages' | 'first-page' = 'all-pages',
-    showPageNumbers: boolean = false,
-    renderDelay: number = 7000,
-    loadTimeout: number = 60000
-  ): Promise<string> {
-    return new Promise<string>(async (resolve, reject) => {
-      try {
-        // Ensure output directory exists
-        const outputDir = path.dirname(outputPath);
-        await fs.promises.mkdir(outputDir, { recursive: true });
+  private buildHtmlContent({
+    markdown,
+    paperFormat = 'letter',
+    paperOrientation = 'portrait',
+    paperBorder = '2cm',
+    margin,
+    watermark = '',
+    watermarkScope = 'all-pages',
+    theme = 'default',
+    customCss = '',
+  }: {
+    markdown: string;
+    paperFormat?: string;
+    paperOrientation?: string;
+    paperBorder?: string;
+    margin?: MarginSettings;
+    watermark?: string;
+    watermarkScope?: 'all-pages' | 'first-page';
+    theme?: string;
+    customCss?: string;
+  }): string {
+    const mdParser = new Remarkable({
+      breaks: true,
+      preset: 'default',
+      html: false,
+      highlight: (str: string, language: string) => {
+        if (language && language === 'mermaid') {
+          return `<div class="mermaid">${str}</div>`;
+        }
+        if (language && hljs.getLanguage(language)) {
+          try {
+            return hljs.highlight(str, { language }).value;
+          } catch (err) {}
+        }
+        try {
+          return hljs.highlightAuto(str).value;
+        } catch (err) {}
+        return '';
+      },
+    });
 
-        // Get incremental path and ensure absolute
-        outputPath = this.getIncrementalPath(outputPath);
-        outputPath = path.resolve(outputPath);
+    const watermarkClassName =
+      watermarkScope === 'first-page'
+        ? 'watermark watermark--first-page'
+        : 'watermark watermark--all-pages';
 
-        // Setup markdown parser with syntax highlighting
-        const mdParser = new Remarkable({
-          breaks: true,
-          preset: 'default',
-          // Raw HTML in caller markdown is NOT trusted: passing it through would
-          // allow <iframe src="file://...">/<script>/<object> to read local files
-          // and trigger outbound requests when rendered in Chrome. Keep it disabled.
-          html: false,
-          highlight: (str: string, language: string) => {
-            if (language && language === 'mermaid') {
-              return `<div class="mermaid">${str}</div>`;
-            }
-            if (language && hljs.getLanguage(language)) {
-              try {
-                return hljs.highlight(str, { language }).value;
-              } catch (err) { }
-            }
-            try {
-              return hljs.highlightAuto(str).value;
-            } catch (err) { }
-            return '';
-          }
-        });
+    const assetsDir = process.env.M2P_ASSETS_DIR
+      ? path.resolve(process.env.M2P_ASSETS_DIR)
+      : undefined;
+    const assetsBaseTag = assetsDir
+      ? `<base href="${pathToFileURL(assetsDir + path.sep).href}">`
+      : '';
 
-        const watermarkClassName =
-          watermarkScope === 'first-page'
-            ? 'watermark watermark--first-page'
-            : 'watermark watermark--all-pages';
+    const headerOffset = '12.5mm';
+    const showWatermarkAllPages = Boolean(
+      watermark && watermarkScope === 'all-pages'
+    );
 
-        // Optional allowlisted image directory. Relative image references such as
-        // ![](chart.png) resolve against it via <base>; the renderer's request gate
-        // only lets file:// loads through when they stay inside this directory.
-        const assetsDir = process.env.M2P_ASSETS_DIR
-          ? path.resolve(process.env.M2P_ASSETS_DIR)
-          : undefined;
-        const assetsBaseTag = assetsDir
-          ? `<base href="${pathToFileURL(assetsDir + path.sep).href}">`
-          : '';
+    const marginTop = margin?.top || paperBorder;
+    const marginRight = margin?.right || paperBorder;
+    const marginBottom = margin?.bottom || paperBorder;
+    const marginLeft = margin?.left || paperBorder;
 
-        const headerOffset = '12.5mm';
-        const showWatermarkAllPages = Boolean(
-          watermark && watermarkScope === 'all-pages'
-        );
+    const themeStyles = getThemeCss(theme, customCss);
 
-        // Create HTML content
-        const html = `
-<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   ${assetsBaseTag}
   <style>
     @page {
-      margin: ${paperBorder};
-      ${showWatermarkAllPages ? `margin-top: calc(${paperBorder} + ${headerOffset});` : ''}
+      margin-top: ${showWatermarkAllPages ? `calc(${marginTop} + ${headerOffset})` : marginTop};
+      margin-right: ${marginRight};
+      margin-bottom: ${marginBottom};
+      margin-left: ${marginLeft};
       size: ${paperFormat} ${paperOrientation};
     }
-    ${
-      showWatermarkAllPages
-        ? `@page:first { margin-top: ${paperBorder}; }`
-        : ''
-    }
+    ${showWatermarkAllPages ? `@page:first { margin-top: ${marginTop}; }` : ''}
     html, body {
       margin: 0;
       padding: 0;
@@ -465,6 +460,7 @@ export class MarkdownPdfServer {
     }
     .watermark--all-pages { position: fixed; }
     .watermark--first-page { position: absolute; }
+    ${themeStyles}
   </style>
 </head>
 <body>
@@ -477,26 +473,203 @@ export class MarkdownPdfServer {
   </div>
 </body>
 </html>`;
+  }
 
-        // Create temporary HTML file
-        const tmpFile = await new Promise<{ path: string, fd: number }>((resolve, reject) => {
-          tmp.file({ postfix: '.html' }, (err: Error | null, path: string, fd: number) => {
-            if (err) reject(err);
-            else resolve({ path, fd });
-          });
+  private async createTempHtmlFile(html: string): Promise<string> {
+    const tmpFile = await new Promise<{ path: string; fd: number }>((resolve, reject) => {
+      tmp.file({ postfix: '.html' }, (err: Error | null, path: string, fd: number) => {
+        if (err) reject(err);
+        else resolve({ path, fd });
+      });
+    });
+    fs.closeSync(tmpFile.fd);
+    await fs.promises.writeFile(tmpFile.path, html, 'utf8');
+    return tmpFile.path;
+  }
+
+  private async handleCreatePdf(args: ConvertOptions) {
+    const markdown = this.resolveMarkdownContent(args);
+    const contentSize = markdown.length;
+    const lineCount = markdown.split('\n').length;
+
+    const MAX_SIZE = 10 * 1024 * 1024;
+    if (contentSize > MAX_SIZE) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Markdown content too large (${Math.round(contentSize / 1024 / 1024)}MB). Maximum supported size is 10MB.`
+      );
+    }
+
+    const {
+      outputFilename = 'output.pdf',
+      paperFormat = 'letter',
+      paperOrientation = 'portrait',
+      paperBorder = '2cm',
+      margin,
+      watermark = '',
+      watermarkScope = 'all-pages',
+      showPageNumbers = false,
+      theme = 'default',
+      customCss = '',
+      headerText = '',
+      footerText = '',
+    } = args;
+
+    const initialOutputPath = this.resolveOutputPath(outputFilename);
+    const finalOutputPath = path.resolve(this.getIncrementalPath(initialOutputPath));
+
+    const baseLoadTimeout = 60000;
+    const baseRenderDelay = 7000;
+    const loadTimeout = Math.min(
+      baseLoadTimeout + Math.floor(contentSize / 10000) * 1000,
+      300000
+    );
+    const renderDelay = Math.min(
+      baseRenderDelay + Math.floor(lineCount / 100) * 1000,
+      30000
+    );
+
+    let tmpHtmlPath: string | null = null;
+    try {
+      const html = this.buildHtmlContent({
+        markdown,
+        paperFormat,
+        paperOrientation,
+        paperBorder,
+        margin,
+        watermark,
+        watermarkScope,
+        theme,
+        customCss,
+      });
+
+      tmpHtmlPath = await this.createTempHtmlFile(html);
+
+      const assetsDir = process.env.M2P_ASSETS_DIR
+        ? path.resolve(process.env.M2P_ASSETS_DIR)
+        : undefined;
+
+      const renderPDF = (await import('./puppeteer/render.js')).default;
+      await renderPDF({
+        htmlPath: tmpHtmlPath,
+        pdfPath: finalOutputPath,
+        runningsPath: path.resolve(__dirname, 'runnings.js'),
+        cssPath: path.resolve(__dirname, 'css', 'pdf.css'),
+        highlightCssPath: '',
+        mermaidPath: path.resolve(__dirname, 'puppeteer', 'vendor', 'mermaid.min.js'),
+        assetsDir,
+        allowAllImages:
+          process.argv.includes('--dangerously-allow-images') ||
+          process.env.M2P_DANGEROUSLY_ALLOW_ALL_IMAGES === 'true',
+        paperFormat,
+        paperOrientation,
+        paperBorder,
+        margin,
+        watermarkScope,
+        showPageNumbers,
+        headerText,
+        footerText,
+        renderDelay,
+        loadTimeout,
+      });
+
+      if (!fs.existsSync(finalOutputPath)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `PDF generation failed: Output file was not created at ${finalOutputPath}.`,
+            },
+          ],
+        };
+      }
+
+      const updates = [
+        `Starting PDF conversion (format: ${paperFormat}, orientation: ${paperOrientation}, theme: ${theme})`,
+        `Content size: ${Math.round(contentSize / 1024)}KB (${lineCount} lines)`,
+        `PDF file created successfully at: ${finalOutputPath}`,
+        `File exists: ${fs.existsSync(finalOutputPath)}`,
+      ];
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: updates.join('\n'),
+          },
+        ],
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `PDF generation failed: ${message}\nTip: Run 'validate_markdown' to check syntax, Mermaid diagrams, and image paths.`,
+          },
+        ],
+      };
+    } finally {
+      if (tmpHtmlPath && fs.existsSync(tmpHtmlPath)) {
+        fs.promises.unlink(tmpHtmlPath).catch(() => {});
+      }
+    }
+  }
+
+  private async handleBatchCreatePdf(args: {
+    documents: ConvertOptions[];
+    sharedConfig?: Partial<ConvertOptions>;
+  }) {
+    const { documents, sharedConfig = {} } = args;
+
+    if (!Array.isArray(documents) || documents.length === 0) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'batch_create_pdf requires a non-empty "documents" array'
+      );
+    }
+
+    const { renderBatchPDF } = await import('./puppeteer/render.js');
+    const tempHtmlFiles: string[] = [];
+    const batchRenderItems: any[] = [];
+
+    try {
+      for (let i = 0; i < documents.length; i++) {
+        const doc = documents[i];
+        const merged: ConvertOptions = {
+          ...sharedConfig,
+          ...doc,
+        };
+
+        const markdown = this.resolveMarkdownContent(merged);
+        const outputFilename = merged.outputFilename || `batch-output-${i + 1}.pdf`;
+        const initialOutputPath = this.resolveOutputPath(outputFilename);
+        const finalOutputPath = path.resolve(this.getIncrementalPath(initialOutputPath));
+
+        const html = this.buildHtmlContent({
+          markdown,
+          paperFormat: merged.paperFormat || 'letter',
+          paperOrientation: merged.paperOrientation || 'portrait',
+          paperBorder: merged.paperBorder || '20mm',
+          margin: merged.margin,
+          watermark: merged.watermark || '',
+          watermarkScope: merged.watermarkScope || 'all-pages',
+          theme: merged.theme || 'default',
+          customCss: merged.customCss || '',
         });
 
-        // Close file descriptor immediately
-        fs.closeSync(tmpFile.fd);
+        const tmpHtmlPath = await this.createTempHtmlFile(html);
+        tempHtmlFiles.push(tmpHtmlPath);
 
-        // Write HTML content
-        await fs.promises.writeFile(tmpFile.path, html);
+        const assetsDir = process.env.M2P_ASSETS_DIR
+          ? path.resolve(process.env.M2P_ASSETS_DIR)
+          : undefined;
 
-        // Import and use Puppeteer renderer
-        const renderPDF = (await import('./puppeteer/render.js')).default;
-        await renderPDF({
-          htmlPath: tmpFile.path,
-          pdfPath: outputPath,
+        batchRenderItems.push({
+          htmlPath: tmpHtmlPath,
+          pdfPath: finalOutputPath,
           runningsPath: path.resolve(__dirname, 'runnings.js'),
           cssPath: path.resolve(__dirname, 'css', 'pdf.css'),
           highlightCssPath: '',
@@ -505,39 +678,116 @@ export class MarkdownPdfServer {
           allowAllImages:
             process.argv.includes('--dangerously-allow-images') ||
             process.env.M2P_DANGEROUSLY_ALLOW_ALL_IMAGES === 'true',
-          paperFormat,
-          paperOrientation,
-          paperBorder,
-          watermarkScope,
-          showPageNumbers,
-          renderDelay,
-          loadTimeout
+          paperFormat: merged.paperFormat || 'letter',
+          paperOrientation: merged.paperOrientation || 'portrait',
+          paperBorder: merged.paperBorder || '20mm',
+          margin: merged.margin,
+          watermarkScope: merged.watermarkScope || 'all-pages',
+          showPageNumbers: merged.showPageNumbers || false,
+          headerText: merged.headerText || '',
+          footerText: merged.footerText || '',
+          renderDelay: 5000,
+          loadTimeout: 60000,
         });
-
-        resolve(outputPath);
-      } catch (error) {
-        reject(new McpError(
-          ErrorCode.InternalError,
-          `PDF generation failed: ${error instanceof Error ? error.message : String(error)}`,
-          {
-            details: {
-              phase: error instanceof Error && error.message.includes('renderPDF') ? 'renderPDF' : 'setup',
-              outputPath,
-              paperFormat,
-              paperOrientation,
-              ...(error instanceof Error ? {
-                name: error.name,
-                stack: error.stack
-              } : {})
-            }
-          }
-        ));
       }
-    });
+
+      const batchResult = await renderBatchPDF(batchRenderItems);
+
+      const summaryLines = [
+        `### Batch PDF Generation Results`,
+        `- **Total Documents:** ${batchResult.total}`,
+        `- **Successful:** ${batchResult.successful}`,
+        `- **Failed:** ${batchResult.failed}`,
+        '',
+        '| Status | Output Path | Details |',
+        '| --- | --- | --- |',
+      ];
+
+      for (const res of batchResult.results) {
+        if (res.success) {
+          summaryLines.push(`| ✅ Success | \`${res.pdfPath}\` | Generated successfully |`);
+        } else {
+          summaryLines.push(`| ❌ Failed | \`${res.pdfPath}\` | ${res.error || 'Unknown error'} |`);
+        }
+      }
+
+      return {
+        isError: batchResult.failed > 0 && batchResult.successful === 0,
+        content: [
+          {
+            type: 'text',
+            text: summaryLines.join('\n'),
+          },
+        ],
+      };
+    } finally {
+      for (const tmpFile of tempHtmlFiles) {
+        if (fs.existsSync(tmpFile)) {
+          fs.promises.unlink(tmpFile).catch(() => {});
+        }
+      }
+    }
   }
 
-  private transport: StdioServerTransport | null = null;
-  private isRunning: boolean = false;
+  private async handleValidateMarkdown(args: { markdown?: string; inputPath?: string }) {
+    let content = '';
+    try {
+      content = this.resolveMarkdownContent(args);
+    } catch (err: unknown) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `Validation Error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      };
+    }
+
+    const assetsDir = process.env.M2P_ASSETS_DIR;
+    const result = validateMarkdown(content, assetsDir);
+
+    const reportLines = [
+      `### Markdown Validation Report`,
+      `- **Status:** ${result.valid ? '✅ Valid' : '❌ Issues Found'}`,
+      `- **Characters:** ${result.metrics.charCount}`,
+      `- **Lines:** ${result.metrics.lineCount}`,
+      `- **Words:** ${result.metrics.wordCount}`,
+      `- **Estimated Pages:** ~${result.metrics.estimatedPages}`,
+      `- **Mermaid Diagrams:** ${result.metrics.mermaidDiagramCount}`,
+      `- **Images Referenced:** ${result.metrics.imageCount}`,
+      `- **Estimated Load Timeout:** ${result.metrics.estimatedLoadTimeoutMs / 1000}s`,
+    ];
+
+    if (result.errors.length > 0) {
+      reportLines.push('', '#### ❌ Errors:');
+      for (const err of result.errors) {
+        reportLines.push(`- ${err}`);
+      }
+    }
+
+    if (result.warnings.length > 0) {
+      reportLines.push('', '#### ⚠️ Warnings & Suggestions:');
+      for (const warn of result.warnings) {
+        reportLines.push(`- ${warn}`);
+      }
+    }
+
+    if (result.errors.length === 0 && result.warnings.length === 0) {
+      reportLines.push('', 'No issues found! The document is ready for PDF conversion.');
+    }
+
+    return {
+      isError: !result.valid,
+      content: [
+        {
+          type: 'text',
+          text: reportLines.join('\n'),
+        },
+      ],
+    };
+  }
 
   public async run(): Promise<void> {
     if (this.isRunning) {
@@ -550,10 +800,15 @@ export class MarkdownPdfServer {
     try {
       await this.server.connect(this.transport);
 
-      // Keep the process running until explicitly closed
       return new Promise<void>((resolve) => {
         const cleanup = async () => {
           this.isRunning = false;
+          // Clean up signal handlers
+          for (const remove of this.signalCleanupHandlers) {
+            remove();
+          }
+          this.signalCleanupHandlers = [];
+
           if (this.transport) {
             try {
               await this.server.close();
@@ -565,8 +820,14 @@ export class MarkdownPdfServer {
           resolve();
         };
 
-        process.once('SIGINT', cleanup);
-        process.once('SIGTERM', cleanup);
+        const onSigint = () => { cleanup(); };
+        const onSigterm = () => { cleanup(); };
+
+        process.once('SIGINT', onSigint);
+        process.once('SIGTERM', onSigterm);
+
+        this.signalCleanupHandlers.push(() => process.removeListener('SIGINT', onSigint));
+        this.signalCleanupHandlers.push(() => process.removeListener('SIGTERM', onSigterm));
       });
     } catch (error) {
       this.isRunning = false;
@@ -585,7 +846,7 @@ export class MarkdownPdfServer {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const server = new MarkdownPdfServer();
-  server.run().catch(error => {
+  server.run().catch((error) => {
     if (error instanceof Error) {
       throw new McpError(
         ErrorCode.InternalError,
@@ -593,8 +854,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
         {
           details: {
             name: error.name,
-            stack: error.stack
-          }
+            stack: error.stack,
+          },
         }
       );
     }

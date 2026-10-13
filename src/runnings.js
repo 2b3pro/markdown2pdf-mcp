@@ -54,12 +54,23 @@ const templateStyles = `
 export default function buildHeaderFooter({
   watermarkText = '',
   watermarkScope = 'all-pages',
-  showPageNumbers = false
+  showPageNumbers = false,
+  headerText = '',
+  footerText = ''
 } = {}) {
   const safeWatermark = escapeHtml(watermarkText);
+  const safeHeaderText = escapeHtml(headerText);
+  const safeFooterText = escapeHtml(footerText);
+
   const includeWatermark = safeWatermark && watermarkScope === 'all-pages';
   const watermarkSpan = includeWatermark
     ? `<span class="m2p-watermark">${safeWatermark}</span>`
+    : '<span></span>';
+  const headerSpan = safeHeaderText
+    ? `<span class="m2p-custom-header">${safeHeaderText}</span>`
+    : '<span></span>';
+  const footerSpan = safeFooterText
+    ? `<span class="m2p-custom-footer">${safeFooterText}</span>`
     : '<span></span>';
   const pageNumberSpan = showPageNumbers
     ? `<span class="m2p-page-number">Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>`
@@ -68,6 +79,7 @@ export default function buildHeaderFooter({
   const header = `
     ${templateStyles}
     <div class="m2p-header">
+      ${headerSpan}
       ${watermarkSpan}
     </div>
   `;
@@ -75,6 +87,7 @@ export default function buildHeaderFooter({
   const footer = `
     ${templateStyles}
     <div class="m2p-footer">
+      ${footerSpan}
       ${watermarkSpan}
       ${pageNumberSpan}
     </div>
@@ -85,3 +98,4 @@ export default function buildHeaderFooter({
     footer
   };
 }
+

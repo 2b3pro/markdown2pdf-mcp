@@ -97,7 +97,7 @@ jest.unstable_mockModule('url', () => ({
   fileURLToPath: realFileURLToPath
 }));
 
-const { default: renderPDF, shouldAllowRequest, isAllowedFileUrl } = await import(
+const { default: renderPDF, renderBatchPDF, shouldAllowRequest, isAllowedFileUrl } = await import(
   '../src/puppeteer/render.js'
 );
 
@@ -315,4 +315,75 @@ describe('renderPDF Windows path handling', () => {
       })
     );
   });
+
+  it('supports asymmetric margin object', async () => {
+    mockEvaluate
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce('');
+
+    await renderPDF({
+      htmlPath: windowsHtmlPath,
+      pdfPath: 'C:\\\\temp\\\\output.pdf',
+      runningsPath: windowsRunningsPath,
+      cssPath: '',
+      highlightCssPath: '',
+      paperFormat: 'letter',
+      paperOrientation: 'portrait',
+      margin: { top: '30mm', right: '15mm', bottom: '25mm', left: '15mm' },
+      watermarkScope: 'all-pages',
+      showPageNumbers: false,
+      renderDelay: 0,
+      loadTimeout: 1000
+    });
+
+    expect(mockPdf).toHaveBeenCalledWith(
+      expect.objectContaining({
+        margin: { top: '30mm', right: '15mm', bottom: '25mm', left: '15mm' }
+      })
+    );
+  });
+
+  it('renderBatchPDF launches browser once and renders multiple documents', async () => {
+    mockEvaluate
+      .mockResolvedValue(null);
+
+    const result = await renderBatchPDF([
+      {
+        htmlPath: windowsHtmlPath,
+        pdfPath: 'C:\\\\temp\\\\doc1.pdf',
+        runningsPath: windowsRunningsPath,
+        cssPath: '',
+        highlightCssPath: '',
+        paperFormat: 'letter',
+        paperOrientation: 'portrait',
+        paperBorder: '2cm',
+        watermarkScope: 'all-pages',
+        showPageNumbers: false,
+        renderDelay: 0,
+        loadTimeout: 1000
+      },
+      {
+        htmlPath: windowsHtmlPath,
+        pdfPath: 'C:\\\\temp\\\\doc2.pdf',
+        runningsPath: windowsRunningsPath,
+        cssPath: '',
+        highlightCssPath: '',
+        paperFormat: 'a4',
+        paperOrientation: 'landscape',
+        paperBorder: '2cm',
+        watermarkScope: 'all-pages',
+        showPageNumbers: false,
+        renderDelay: 0,
+        loadTimeout: 1000
+      }
+    ]);
+
+    expect(mockLaunch).toHaveBeenCalledTimes(1);
+    expect(mockBrowser.close).toHaveBeenCalledTimes(1);
+    expect(result.total).toBe(2);
+    expect(result.successful).toBe(2);
+    expect(result.failed).toBe(0);
+  });
 });
+

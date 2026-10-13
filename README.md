@@ -9,14 +9,16 @@ Inspired by Alan Shaw's [markdown-pdf](https://github.com/alanshaw/markdown-pdf)
 ## Features
 
 - Convert Markdown to PDF with a single command
+- High-performance batch conversions sharing a single browser session (`batch_create_pdf`)
+- Pre-flight Markdown validation and linting without launching a browser (`validate_markdown`)
+- Built-in visual themes: `default`, `github`, `academic`, `report`, and `minimal`
+- Custom CSS styling and font overrides
+- Asymmetric margin support (`margin: { top, right, bottom, left }`)
+- Convert from string or directly from local file path (`inputPath`)
 - Syntax highlighting for code blocks
-- Custom CSS styling for PDF output
-- Support for standard Markdown formatting
-- Mermaid diagram rendering
+- Mermaid diagram rendering with local bundle
 - Modern PDF generation using Chrome's rendering engine
-- Excellent support for modern web features and fonts
-- Reliable resource loading and rendering
-- Optional page numbers rendered via the PDF footer
+- Optional page numbers and custom header/footer text
 - Watermarks with configurable scope (first page or all pages)
 
 ## Limitations
@@ -57,7 +59,7 @@ graph TD;
 
 ´´´
 
-If there is a syntax error in your diagram, the error message will be rendered in the PDF, helping you to debug it.
+If there is a syntax error in your diagram, the error message will be rendered in the PDF, helping you to debug it. You can also run `validate_markdown` prior to conversion to check Mermaid diagram syntax.
 
 ## Installation (from source)
 
@@ -83,62 +85,109 @@ npm install markdown2pdf-mcp
 
 ## Usage
 
-### Starting the Server
+### MCP Tools Overview
 
-```bash
-npm start
-```
+The server provides three focused tools:
 
-### Using the MCP Tool
+1. **`create_pdf_from_markdown`**: Convert a Markdown document to PDF with extensive layout, theme, and margin configuration.
+2. **`batch_create_pdf`**: Convert multiple Markdown documents or files in a single call using a shared browser session.
+3. **`validate_markdown`**: Fast pre-flight check that validates Markdown syntax, Mermaid blocks, asset paths, and size limits without browser launch overhead.
 
-The server provides a single tool `create_pdf_from_markdown` with the following parameters:
+---
+
+### 1. `create_pdf_from_markdown`
 
 ```typescript
 {
-  // Required parameters
-  markdown: string;    // Markdown content to convert
+  // Content inputs (provide at least one)
+  markdown?: string;        // Raw Markdown string content
+  inputPath?: string;       // Or path to a local .md file on disk
 
-  // Optional parameters with defaults
-  outputFilename?: string;  // Filename or path for the PDF (e.g., "output.pdf", "reports/q3.pdf", "/abs/path/q3.pdf")
+  // Layout & Formatting
+  outputFilename?: string;  // Target PDF path (e.g., "report.pdf", "out/q3.pdf")
   paperFormat?: string;     // 'letter' (default), 'a4', 'a3', 'a5', 'legal', 'tabloid'
-  paperOrientation?: string; // 'portrait' (default), 'landscape'
-  paperBorder?: string;     // '2cm' (default), accepts decimal values with CSS units (e.g., '1.5cm', '2.5mm', '0.5in', '10.5px')
-  watermark?: string;       // Optional watermark text (max 15 characters, uppercase)
-  watermarkScope?: 'all-pages' | 'first-page'; // Defaults to 'all-pages'
-  showPageNumbers?: boolean; // Defaults to false
+  paperOrientation?: string;// 'portrait' (default), 'landscape'
+  paperBorder?: string;     // Uniform border margin (e.g., '20mm', '1.5in')
+  margin?: {                // Asymmetric margins (overrides paperBorder)
+    top?: string;
+    right?: string;
+    bottom?: string;
+    left?: string;
+  };
+
+  // Themes & Styling
+  theme?: string;           // 'default', 'github', 'academic', 'report', 'minimal'
+  customCss?: string;       // Custom CSS injected into the page
+
+  // Header, Footer & Watermark
+  watermark?: string;       // Watermark text (max 15 characters, uppercase)
+  watermarkScope?: string;  // 'all-pages' (default) or 'first-page'
+  showPageNumbers?: boolean;// Show page numbers in footer (default: false)
+  headerText?: string;      // Custom running header text
+  footerText?: string;      // Custom running footer text
 }
 ```
 
-Example with options:
+Example with theme and custom margins:
 
 ```typescript
 await use_mcp_tool({
   server_name: "markdown2pdf",
   tool_name: "create_pdf_from_markdown",
   arguments: {
-    markdown: "# Hello World\n\nThis is a test document.",
-    outputFilename: "output.pdf",
+    markdown: "# Quarterly Report\n\nKey performance highlights...",
+    outputFilename: "q3-report.pdf",
+    theme: "report",
     paperFormat: "a4",
-    paperOrientation: "landscape",
-    paperBorder: "1.5cm",
-    watermark: "DRAFT",
-    watermarkScope: "first-page",
+    margin: { top: "25mm", right: "15mm", bottom: "25mm", left: "15mm" },
     showPageNumbers: true,
+    headerText: "Confidential - Executive Eyes Only",
   },
 });
 ```
 
-Example minimal usage:
+---
+
+### 2. `batch_create_pdf`
+
+Convert multiple documents in a single call with browser instance reuse:
 
 ```typescript
 await use_mcp_tool({
   server_name: "markdown2pdf",
-  tool_name: "create_pdf_from_markdown",
+  tool_name: "batch_create_pdf",
   arguments: {
-    markdown: "# Hello World\n\nThis is a test document.",
-    outputFilename: "output.pdf",
-  },
+    documents: [
+      { markdown: "# Chapter 1\nIntroduction...", outputFilename: "ch1.pdf" },
+      { inputPath: "docs/ch2.md", outputFilename: "ch2.pdf" },
+      { markdown: "# Appendix\nData sheets...", outputFilename: "appendix.pdf", theme: "academic" }
+    ],
+    sharedConfig: {
+      paperFormat: "letter",
+      theme: "github",
+      showPageNumbers: true
+    }
+  }
 });
+```
+
+---
+
+### 3. `validate_markdown`
+
+Fast pre-flight check before initiating PDF conversion:
+
+```typescript
+await use_mcp_tool({
+  server_name: "markdown2pdf",
+  tool_name: "validate_markdown",
+  arguments: {
+    markdown: "# My Document\nFormula: $x^2$\n```mermaid\ngraph TD; A-->B;\n```"
+  }
+});
+```
+
+Returns document stats, warnings (such as unsupported LaTeX math or stripped HTML tags), and errors (such as broken image references or oversized files).
 ```
 
 ## Running on Demand with `npx`

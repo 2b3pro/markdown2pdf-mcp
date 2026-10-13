@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [2.3.0] - 2026-10-12
+
+### Added
+
+- `batch_create_pdf` tool: Multi-document PDF generation sharing a single browser session, drastically reducing conversion latency for docsets.
+- `validate_markdown` tool: Fast pre-flight validator running in Node.js without browser overhead; detects unsupported LaTeX math, warns about stripped HTML tags, validates Mermaid syntax, and checks local image path security.
+- Built-in visual themes: `default` (modern sans-serif system fonts), `github`, `academic`, `report`, and `minimal`.
+- Direct file conversion: `inputPath` parameter in `create_pdf_from_markdown` and `batch_create_pdf` to convert markdown files from disk without passing raw text through LLM context.
+- Asymmetric margin support: `margin: { top, right, bottom, left }` overrides uniform `paperBorder`.
+- Custom typography & styling: `customCss` parameter for injecting custom CSS rules.
+- Custom running headers and footers: `headerText` and `footerText` parameters in headers/footers.
+
+### Changed
+
+- Standardized MCP server capabilities declaration to `{ tools: {} }`.
+- Aligned error handling with MCP protocol best practices: returns `{ isError: true, content: [...] }` for runtime generation failures with diagnostic guidance.
+- Fixed `MaxListenersExceededWarning` on `process` EventEmitter by moving signal listeners from constructor into `run()` lifecycle.
+- Extracted `launchBrowser` and enabled shared Puppeteer browser sessions across batch conversions.
+
 ## [2.2.0] - 2026-10-09
 
 ### Security

@@ -54,14 +54,6 @@ export function isAllowedFileUrl(url, assetsDir) {
  * any http(s) subresource would be an outbound request from the server (SSRF).
  * By default we allow only the top-level navigation to our own temp HTML file
  * and self-contained data: URIs.
- *
- * Opt-in relaxations:
- * - assetsDir: file:// images inside that allowlisted directory may load.
- * - allowAllImages (the --dangerously-allow-images override): any file:// or
- *   http(s) subresource may load, restoring the pre-2.2.0 behavior. Raw HTML is
- *   still disabled upstream, so this only re-enables markdown image loading.
- *
- * Exported so the policy can be unit-tested without launching a browser.
  */
 export function shouldAllowRequest({ isMainFrameNavigation, url, assetsDir, allowAllImages }) {
   if (isMainFrameNavigation) return true;
@@ -74,33 +66,11 @@ export function shouldAllowRequest({ isMainFrameNavigation, url, assetsDir, allo
   return false;
 }
 
-async function renderPDF({
-  htmlPath,
-  pdfPath,
-  runningsPath,
-  cssPath,
-  highlightCssPath,
-  mermaidPath,
-  assetsDir,
-  allowAllImages,
-  paperFormat,
-  paperOrientation,
-  paperBorder,
-  watermarkScope,
-  showPageNumbers,
-  renderDelay,
-  loadTimeout
-}) {
-  let browser;
-  const verbose = process.env.M2P_VERBOSE === 'true';
-
-  if (verbose) {
-    console.error(`[markdown2pdf] Starting PDF rendering`);
-    console.error(`[markdown2pdf] Timeouts - load: ${loadTimeout}ms, render: ${renderDelay}ms`);
-  }
-
+/**
+ * Launches a Chromium instance using the pinned Chrome version or fallback.
+ */
+export async function launchBrowser(verbose = false) {
   try {
-    // Try with our specific Chrome version first
     const chromePath = path.join(
       os.homedir(),
       '.cache',
@@ -116,25 +86,24 @@ async function renderPDF({
       throw new Error(`Chrome executable not found at: ${chromePath}`);
     }
 
-    browser = await puppeteer.launch({
+    return await puppeteer.launch({
       headless: true,
       executablePath: chromePath,
       product: 'chrome',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', // Prevent shared memory issues
+        '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--disable-gpu',
-        '--max-old-space-size=4096' // Increase memory limit to 4GB
+        '--max-old-space-size=4096'
       ]
     });
   } catch (err) {
-    // Fall back to default Puppeteer-installed Chrome
     if (verbose) {
       console.error('[markdown2pdf] Falling back to default Chrome installation');
     }
-    browser = await puppeteer.launch({
+    return await puppeteer.launch({
       headless: true,
       product: 'chrome',
       args: [
@@ -147,19 +116,40 @@ async function renderPDF({
       ]
     });
   }
-  
-  // Set before the finally-block close() so the disconnected handler can tell an
-  // intentional shutdown apart from a real crash and not throw a false alarm.
-  let intentionalClose = false;
+}
+
+/**
+ * Renders a single PDF page using an existing browser instance.
+ * Automatically closes the page upon completion.
+ */
+async function renderPageInBrowser(browser, {
+  htmlPath,
+  pdfPath,
+  runningsPath,
+  cssPath,
+  highlightCssPath,
+  mermaidPath,
+  assetsDir,
+  allowAllImages,
+  paperFormat,
+  paperOrientation,
+  paperBorder = '2cm',
+  margin,
+  watermarkScope,
+  showPageNumbers,
+  headerText = '',
+  footerText = '',
+  renderDelay = 7000,
+  loadTimeout = 60000
+}) {
+  const verbose = process.env.M2P_VERBOSE === 'true';
+  const page = await browser.newPage();
 
   try {
-    const page = await browser.newPage();
-
-    // Security: block local-file reads (LFI) and outbound requests (SSRF).
-    // Must be enabled before navigation so the very first subresource is gated.
     if (allowAllImages) {
       console.error('[markdown2pdf] WARNING: --dangerously-allow-images is enabled. Markdown can load local files and make outbound requests from this process (LFI/SSRF). Use only with fully trusted input.');
     }
+
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const allowed = shouldAllowRequest({
@@ -179,15 +169,6 @@ async function renderPDF({
       }
     });
 
-    // Monitor browser crashes. Throwing inside an event callback cannot be
-    // caught by the caller and would crash the process, so only log here; a real
-    // crash surfaces as a rejection from the awaited page operations below.
-    browser.on('disconnected', () => {
-      if (!intentionalClose) {
-        console.error('[markdown2pdf] Browser disconnected unexpectedly. This may indicate an out-of-memory issue or browser crash. Try reducing content size or increasing system resources.');
-      }
-    });
-
     page.on('error', err => {
       console.error(`[markdown2pdf] Page crashed: ${err.message}`);
     });
@@ -198,7 +179,6 @@ async function renderPDF({
       }
     });
 
-    // Set viewport
     await page.setViewport({
       width: 1200,
       height: 1600
@@ -208,7 +188,6 @@ async function renderPDF({
       console.error(`[markdown2pdf] Loading HTML from: ${htmlPath}`);
     }
 
-    // Load the HTML file with timeout
     const htmlFileUrl = pathToFileURL(htmlPath).href;
     await page.goto(htmlFileUrl, {
       waitUntil: 'networkidle0',
@@ -224,28 +203,23 @@ async function renderPDF({
       console.error(`[markdown2pdf] HTML loaded successfully`);
     }
 
-    // Import runnings (header/footer)
     const runningsUrl = pathToFileURL(runningsPath).href;
     const runningsModule = await import(runningsUrl).catch(err => {
       throw new Error(`Failed to import runnings.js: ${err.message}`);
     });
 
-    // Add CSS if provided
     if (cssPath && fs.existsSync(cssPath)) {
       await page.addStyleTag({ path: cssPath }).catch(err => {
         throw new Error(`Failed to add CSS: ${err.message}`);
       });
     }
-    
+
     if (highlightCssPath && fs.existsSync(highlightCssPath)) {
       await page.addStyleTag({ path: highlightCssPath }).catch(err => {
         throw new Error(`Failed to add highlight CSS: ${err.message}`);
       });
     }
 
-    // Inject Mermaid from a local vendored bundle (no CDN / no network) and
-    // render any diagrams. addScriptTag with `path` reads the file in Node and
-    // injects it inline, so it is not subject to request interception.
     if (mermaidPath && fs.existsSync(mermaidPath)) {
       await page.addScriptTag({ path: mermaidPath }).catch(err => {
         throw new Error(`Failed to add Mermaid script: ${err.message}`);
@@ -267,10 +241,10 @@ async function renderPDF({
       });
     }
 
-    // Wait for specified delay
-    await new Promise(resolve => setTimeout(resolve, renderDelay));
+    if (renderDelay > 0) {
+      await new Promise(resolve => setTimeout(resolve, renderDelay));
+    }
 
-    // Check for mermaid errors
     const mermaidError = await page.evaluate(() => {
       const errorDiv = document.getElementById('mermaid-error');
       return errorDiv ? errorDiv.innerText : null;
@@ -280,13 +254,11 @@ async function renderPDF({
       throw new Error(`Mermaid diagram rendering failed: ${mermaidError}`);
     }
 
-    // Force repaint to ensure proper rendering
     await page.evaluate(() => {
       document.body.style.transform = 'scale(1)';
       return document.body.offsetHeight;
     });
 
-    // Get watermark text if present
     const watermarkText = await page.evaluate(() => {
       const watermark = document.querySelector('.watermark');
       return watermark ? watermark.textContent : '';
@@ -300,23 +272,27 @@ async function renderPDF({
     const templates = templatesFactory({
       watermarkText,
       watermarkScope,
-      showPageNumbers
+      showPageNumbers,
+      headerText,
+      footerText
     });
 
     const shouldDisplayHeaderFooter = Boolean(
-      showPageNumbers || (watermarkText && watermarkScope === 'all-pages')
+      showPageNumbers || (watermarkText && watermarkScope === 'all-pages') || headerText || footerText
     );
+
+    const pdfMargin = {
+      top: margin?.top || paperBorder,
+      right: margin?.right || paperBorder,
+      bottom: margin?.bottom || paperBorder,
+      left: margin?.left || paperBorder
+    };
 
     await page.pdf({
       path: pdfPath,
       format: paperFormat,
       landscape: paperOrientation === 'landscape',
-      margin: {
-        top: paperBorder,
-        right: paperBorder,
-        bottom: paperBorder,
-        left: paperBorder
-      },
+      margin: pdfMargin,
       printBackground: true,
       displayHeaderFooter: shouldDisplayHeaderFooter,
       headerTemplate: shouldDisplayHeaderFooter ? templates.header : '',
@@ -326,10 +302,91 @@ async function renderPDF({
 
     return pdfPath;
   } finally {
-    if (browser) {
-      intentionalClose = true;
-      await browser.close();
+    if (page && typeof page.close === 'function') {
+      await page.close().catch(() => {});
     }
+  }
+}
+
+/**
+ * Main single-PDF renderer.
+ * If options.browser is provided, it reuses it; otherwise it manages its own browser instance.
+ */
+async function renderPDF(options) {
+  const verbose = process.env.M2P_VERBOSE === 'true';
+  const providedBrowser = options.browser;
+  let browser = providedBrowser;
+  let intentionalClose = false;
+
+  if (verbose) {
+    console.error(`[markdown2pdf] Starting PDF rendering`);
+    console.error(`[markdown2pdf] Timeouts - load: ${options.loadTimeout}ms, render: ${options.renderDelay}ms`);
+  }
+
+  try {
+    if (!browser) {
+      browser = await launchBrowser(verbose);
+      browser.on('disconnected', () => {
+        if (!intentionalClose) {
+          console.error('[markdown2pdf] Browser disconnected unexpectedly. This may indicate an out-of-memory issue or browser crash.');
+        }
+      });
+    }
+
+    return await renderPageInBrowser(browser, options);
+  } finally {
+    if (!providedBrowser && browser) {
+      intentionalClose = true;
+      await browser.close().catch(() => {});
+    }
+  }
+}
+
+/**
+ * Batch PDF renderer that processes multiple items using a shared browser instance.
+ */
+export async function renderBatchPDF(items) {
+  const verbose = process.env.M2P_VERBOSE === 'true';
+  const browser = await launchBrowser(verbose);
+  let intentionalClose = false;
+
+  browser.on('disconnected', () => {
+    if (!intentionalClose) {
+      console.error('[markdown2pdf] Browser disconnected unexpectedly during batch execution.');
+    }
+  });
+
+  const results = [];
+
+  try {
+    for (const item of items) {
+      try {
+        await renderPageInBrowser(browser, item);
+        results.push({
+          pdfPath: item.pdfPath,
+          success: true
+        });
+      } catch (err) {
+        results.push({
+          pdfPath: item.pdfPath,
+          success: false,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+
+    return {
+      total: items.length,
+      successful,
+      failed,
+      results
+    };
+  } finally {
+    intentionalClose = true;
+    await browser.close().catch(() => {});
   }
 }
 
